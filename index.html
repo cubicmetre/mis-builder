@@ -459,6 +459,15 @@
             const [moveAllMode, setMoveAllMode] = useState(false);
             const [displayMode, setDisplayMode] = useState(false); // false = normal, true = redstone optimization
             const [rejectedItems, setRejectedItems] = useState([]); // Array of item IDs rejected from fill level adjustment
+            const [playerStats, setPlayerStats] = useState(() => {
+                const saved = localStorage.getItem('minecraftBuilder_playerStats');
+                return saved ? JSON.parse(saved) : null;
+            }); // Player statistics from imported JSON
+            const [statsSortMode, setStatsSortMode] = useState(() => {
+                const saved = localStorage.getItem('minecraftBuilder_statsSortMode');
+                return saved ? saved : 'none';
+            }); // 'none', 'used', 'crafted', 'acquired'
+            const [statsPercentRange, setStatsPercentRange] = useState([null, 100]); // Percentage range filter for stats (null = include all, 0-100 = only items with stats)
             const [selectedSlots, setSelectedSlots] = useState([]); // Array of {cellId, slotIndex}
             const [lastSelectedSlot, setLastSelectedSlot] = useState(null); // For shift-click range selection
             const [dragOverCell, setDragOverCell] = useState(null); // Track which cell is being dragged over
@@ -544,6 +553,18 @@
             useEffect(() => {
                 localStorage.setItem('minecraftBuilder_nextCellId', nextCellId.toString());
             }, [nextCellId]);
+
+            useEffect(() => {
+                if (playerStats) {
+                    localStorage.setItem('minecraftBuilder_playerStats', JSON.stringify(playerStats));
+                } else {
+                    localStorage.removeItem('minecraftBuilder_playerStats');
+                }
+            }, [playerStats]);
+
+            useEffect(() => {
+                localStorage.setItem('minecraftBuilder_statsSortMode', statsSortMode);
+            }, [statsSortMode]);
 
             // Handle divider dragging
             useEffect(() => {
@@ -714,8 +735,90 @@
                     });
                 }
 
+                // Apply stats-based sorting and filtering if enabled
+                if (statsSortMode !== 'none' && playerStats) {
+                    // Only filter out items without stats if min is not null (0 or higher)
+                    const excludeItemsWithoutStats = statsPercentRange[0] !== null;
+
+                    // Calculate scores for all items
+                    const itemsWithScores = filtered.map(item => {
+                        let score = 0;
+
+                        // Check if item has ANY relevant stats (mined, crafted, used, picked_up, dropped)
+                        const hasStats = !!(
+                            playerStats.mined?.[item.id] ||
+                            playerStats.crafted?.[item.id] ||
+                            playerStats.used?.[item.id] ||
+                            playerStats.picked_up?.[item.id] ||
+                            playerStats.dropped?.[item.id]
+                        );
+
+                        // Calculate score based on selected sort mode
+                        if (statsSortMode === 'used') {
+                            score = playerStats.used?.[item.id] || 0;
+                        } else if (statsSortMode === 'crafted') {
+                            score = playerStats.crafted?.[item.id] || 0;
+                        } else if (statsSortMode === 'acquired') {
+                            // Calculate acquired score: picked_up - dropped
+                            const pickedUp = playerStats.picked_up?.[item.id] || 0;
+                            const dropped = playerStats.dropped?.[item.id] || 0;
+                            score = pickedUp - dropped;
+                        }
+
+                        return { item, score, hasStats };
+                    });
+
+                    // If min > 0, filter out items without stats (they're treated as having score 0/null)
+                    let itemsToProcess = itemsWithScores;
+                    if (excludeItemsWithoutStats) {
+                        itemsToProcess = itemsWithScores.filter(({ hasStats }) => hasStats);
+                    }
+
+                    // Sort by score to prepare for percentile-based filtering
+                    const sortedItems = [...itemsToProcess].sort((a, b) => b.score - a.score);
+
+                    if (sortedItems.length > 0) {
+                        // Use percentile-based filtering instead of score-based
+                        // This counters Zipf distribution by filtering based on item count rather than score range
+                        const totalItems = sortedItems.length;
+
+                        // Apply logarithmic mapping to counter Zipf distribution
+                        // sortedItems is ordered highest score first (index 0 = best item, last index = worst item)
+                        // Slider semantics:
+                        //   - statsPercentRange[0] (bottom slider) = minimum RANK (0 = worst items, 100 = best items)
+                        //   - statsPercentRange[1] (top slider) = maximum RANK (0 = worst items, 100 = best items)
+                        //   - 0-100 shows all items
+                        //   - 50-100 shows top half (best items)
+                        //   - 0-50 shows bottom half (worst items)
+                        const mapPercentile = (linearPercent) => {
+                            if (linearPercent === 0) return 0;
+                            if (linearPercent === 100) return 100;
+                            // Use exponential curve: y = (e^(x/k) - 1) / (e^(100/k) - 1) * 100
+                            // k controls curve steepness, lower = more aggressive at start
+                            const k = 30;
+                            const normalized = (Math.exp(linearPercent / k) - 1) / (Math.exp(100 / k) - 1);
+                            return normalized * 100;
+                        };
+
+                        // Map slider percentages (rank) to array indices (inverted because array is best-first)
+                        // null means include all items from the bottom
+                        const mappedMinRank = statsPercentRange[0] === null ? 0 : mapPercentile(statsPercentRange[0]); // 0-100 rank
+                        const mappedMaxRank = mapPercentile(statsPercentRange[1]); // 0-100 rank
+
+                        // Convert rank to index: rank 0 = last index (worst), rank 100 = index 0 (best)
+                        // minIndex should be the WORSE of the two bounds (higher index)
+                        // maxIndex should be the BETTER of the two bounds (lower index)
+                        const maxIndex = Math.ceil(((100 - mappedMinRank) / 100) * totalItems);
+                        const minIndex = Math.floor(((100 - mappedMaxRank) / 100) * totalItems);
+
+                        filtered = sortedItems.slice(minIndex, maxIndex).map(({ item }) => item);
+                    } else {
+                        filtered = [];
+                    }
+                }
+
                 return filtered;
-            }, [catalogueItems, usedItemIds, searchTerm, hueRange, satRange, lumRange, categoryFilter, groupFilter, materialFilter, stackSizeFilters, rarityFilters]);
+            }, [catalogueItems, usedItemIds, searchTerm, hueRange, satRange, lumRange, categoryFilter, groupFilter, materialFilter, stackSizeFilters, rarityFilters, statsSortMode, playerStats, statsPercentRange]);
 
             // Save current state to history (keep last 10)
             const saveToHistory = () => {
@@ -861,11 +964,26 @@
                 setCells(cells.filter(c => c.id !== cellId));
             };
 
-            // Export cells to JSON
+            // Export cells to JSON (Litematica material list format)
             const exportCells = () => {
-                const exportData = cells.map(cell =>
-                    cell.slots.map(slot => slot ? slot.id : null)
-                );
+                const items = [];
+
+                cells.forEach((cell, cellIndex) => {
+                    cell.slots.forEach(slot => {
+                        if (slot) {
+                            items.push({
+                                id: slot.id,
+                                count: slot.quantity || 1,
+                                cell: cellIndex
+                            });
+                        }
+                    });
+                });
+
+                const exportData = {
+                    name: "Item Layout",
+                    items: items
+                };
 
                 const dataStr = JSON.stringify(exportData, null, 2);
                 const dataBlob = new Blob([dataStr], { type: 'application/json' });
@@ -873,14 +991,14 @@
 
                 const link = document.createElement('a');
                 link.href = url;
-                link.download = 'minecraft-cells.json';
+                link.download = 'item-layout.json';
                 document.body.appendChild(link);
                 link.click();
                 document.body.removeChild(link);
                 URL.revokeObjectURL(url);
             };
 
-            // Import cells from JSON
+            // Import cells from JSON (supports both old array format and new Litematica format)
             const importCells = (event) => {
                 const file = event.target.files[0];
                 if (!file) return;
@@ -890,43 +1008,82 @@
                     try {
                         const importData = JSON.parse(e.target.result);
 
-                        if (!Array.isArray(importData)) {
-                            alert('Invalid file format: Expected an array of cells');
-                            return;
-                        }
+                        let newCells = [];
 
-                        // Convert imported data to cell format
-                        const newCells = importData.map((cellData, index) => {
-                            const slots = cellData.map(itemId => {
-                                if (itemId === null) return null;
+                        // Check if this is the new Litematica format (has "items" array)
+                        if (importData.items && Array.isArray(importData.items)) {
+                            // New Litematica format: {name: "...", items: [{id, count, cell}, ...]}
+                            // Group items by cell
+                            const cellMap = new Map();
+
+                            importData.items.forEach(item => {
+                                const cellIndex = item.cell ?? 0;
+                                if (!cellMap.has(cellIndex)) {
+                                    cellMap.set(cellIndex, []);
+                                }
+
                                 // Find the item in catalogue by id
-                                const item = catalogueItems.find(i => i.id === itemId);
-                                return item || null;
+                                const catalogueItem = catalogueItems.find(i => i.id === item.id);
+                                if (catalogueItem) {
+                                    // Create a copy with the quantity from the import
+                                    const itemWithQuantity = { ...catalogueItem, quantity: item.count };
+                                    cellMap.get(cellIndex).push(itemWithQuantity);
+                                }
                             });
 
-                            // Check if this is an old 50-slot layout
-                            const isOldLayout = slots.length === 50;
+                            // Convert cell map to array of cells
+                            const maxCellIndex = Math.max(...cellMap.keys());
+                            for (let i = 0; i <= maxCellIndex; i++) {
+                                const cellItems = cellMap.get(i) || [];
+                                const slots = Array(54).fill(null);
 
-                            if (isOldLayout) {
-                                // Old layout: shift all items up by 1 to make room for reserved slot 0
-                                // New layout: [null (reserved), ...old items, ...padding to 54]
-                                const migratedSlots = [null, ...slots];
-                                // Pad to 54 slots
-                                while (migratedSlots.length < 54) migratedSlots.push(null);
-                                return {
-                                    id: nextCellId + index,
-                                    slots: migratedSlots
-                                };
-                            } else {
-                                // New layout or different size - ensure exactly 54 slots
-                                while (slots.length < 54) slots.push(null);
-                                if (slots.length > 54) slots.length = 54;
-                                return {
-                                    id: nextCellId + index,
+                                // Fill slots starting from slot 1 (slot 0 is reserved)
+                                cellItems.forEach((item, index) => {
+                                    if (index + 1 < 54) {
+                                        slots[index + 1] = item;
+                                    }
+                                });
+
+                                newCells.push({
+                                    id: nextCellId + i,
                                     slots: slots
-                                };
+                                });
                             }
-                        });
+                        } else if (Array.isArray(importData)) {
+                            // Old array format: [[itemId, itemId, ...], ...]
+                            newCells = importData.map((cellData, index) => {
+                                const slots = cellData.map(itemId => {
+                                    if (itemId === null) return null;
+                                    // Find the item in catalogue by id
+                                    const item = catalogueItems.find(i => i.id === itemId);
+                                    return item || null;
+                                });
+
+                                // Check if this is an old 50-slot layout
+                                const isOldLayout = slots.length === 50;
+
+                                if (isOldLayout) {
+                                    // Old layout: shift all items up by 1 to make room for reserved slot 0
+                                    const migratedSlots = [null, ...slots];
+                                    while (migratedSlots.length < 54) migratedSlots.push(null);
+                                    return {
+                                        id: nextCellId + index,
+                                        slots: migratedSlots
+                                    };
+                                } else {
+                                    // New layout or different size - ensure exactly 54 slots
+                                    while (slots.length < 54) slots.push(null);
+                                    if (slots.length > 54) slots.length = 54;
+                                    return {
+                                        id: nextCellId + index,
+                                        slots: slots
+                                    };
+                                }
+                            });
+                        } else {
+                            alert('Invalid file format: Expected Litematica format or array of cells');
+                            return;
+                        }
 
                         setCells(newCells);
                         setNextCellId(nextCellId + newCells.length);
@@ -942,6 +1099,38 @@
 
                 // Reset the file input so the same file can be imported again
                 event.target.value = '';
+            };
+
+            // Import player statistics from JSON
+            const importStats = (event) => {
+                const file = event.target.files[0];
+                if (!file) return;
+
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    try {
+                        const stats = JSON.parse(e.target.result);
+                        setPlayerStats(stats);
+                        alert('Player statistics imported successfully!');
+                    } catch (error) {
+                        alert('Error parsing stats file: ' + error.message);
+                    }
+                };
+                reader.readAsText(file);
+
+                // Reset the file input
+                event.target.value = '';
+            };
+
+            // Calculate "acquired" score: picked_up - dropped
+            // Higher score = player wants to keep the item
+            const calculateAcquiredScore = (itemId) => {
+                if (!playerStats) return 0;
+
+                const pickedUp = playerStats.picked_up?.[itemId] || 0;
+                const dropped = playerStats.dropped?.[itemId] || 0;
+
+                return pickedUp - dropped;
             };
 
             // Slot selection handler
@@ -1064,6 +1253,7 @@
                 }
 
                 e.preventDefault();
+                e.stopPropagation(); // Stop event from bubbling to cell drop handler
                 setDragOverSlot(null);
 
                 saveToHistory(); // Save state before making changes
@@ -1096,27 +1286,25 @@
                         setCells(cells.map(cell => {
                             if (cell.id === cellId) {
                                 const newSlots = [...cell.slots];
-                                // Keep slot 0 reserved, compact slots 1-53
-                                const compacted = newSlots.slice(1).filter(slot => slot !== null);
 
-                                // Adjust insert position (account for reserved slot 0)
-                                const adjustedSlotIndex = Math.max(0, slotIndex - 1);
-
-                                // Insert at target position
-                                compacted.splice(adjustedSlotIndex, 0, draggedItem.item);
-
-                                // Trim to 53 usable slots
-                                if (compacted.length > 53) {
-                                    compacted.length = 53;
+                                // Don't allow dropping in slot 0
+                                if (slotIndex === 0) {
+                                    return cell;
                                 }
 
-                                // Pad with nulls
-                                while (compacted.length < 53) {
-                                    compacted.push(null);
+                                // Insert at the target position, shifting everything right
+                                // Shift items from the end backwards to make room
+                                for (let i = 53; i > slotIndex; i--) {
+                                    newSlots[i] = newSlots[i - 1];
                                 }
 
-                                // Reconstruct with slot 0 as null
-                                return { ...cell, slots: [null, ...compacted] };
+                                // Place the new item at the target slot
+                                newSlots[slotIndex] = draggedItem.item;
+
+                                // Ensure slot 0 is always null
+                                newSlots[0] = null;
+
+                                return { ...cell, slots: newSlots };
                             }
                             return cell;
                         }));
@@ -1164,36 +1352,48 @@
                                         .filter(idx => idx > 0) // Exclude slot 0
                                         .sort((a, b) => a - b);
 
-                                    // Check if drop target is within the selection itself
-                                    const isDropWithinSelection = selectedIndices.includes(slotIndex);
-                                    if (isDropWithinSelection) {
-                                        // Dropping on ourselves - no change needed
-                                        return cell;
+                                    // Step 1: Collect selected items
+                                    const selectedItems = selectedIndices.map(idx => newSlots[idx]);
+
+                                    // Step 2: Create array without selected items and compact it
+                                    const remainingItems = [];
+                                    for (let i = 1; i < 54; i++) {
+                                        if (!selectedIndices.includes(i) && newSlots[i] !== null) {
+                                            remainingItems.push(newSlots[i]);
+                                        }
                                     }
 
-                                    // Step 1: Collect selected items and remove them (preserve slot 0)
-                                    const selectedItems = selectedIndices.map(idx => newSlots[idx]);
-                                    const remainingSlots = newSlots.filter((slot, idx) => idx === 0 || !selectedIndices.includes(idx));
+                                    // Step 3: Find where to insert in the compacted remaining array
+                                    // We want selected items to take the exact drop slot position
+                                    // So count non-selected items that will be BEFORE the drop position in final arrangement
+                                    // This means: items before drop slot, OR items at drop slot if we're inserting after them
+                                    let insertPosition = 0;
+                                    const isTargetBeforeSelection = slotIndex < selectedIndices[0];
+                                    const isTargetAfterSelection = slotIndex > selectedIndices[selectedIndices.length - 1];
 
-                                    // Step 2: Calculate adjusted insertion index
-                                    // Count how many selected slots are before the drop target
-                                    const selectedBeforeTarget = selectedIndices.filter(idx => idx < slotIndex).length;
-                                    const adjustedInsertIndex = slotIndex - selectedBeforeTarget;
+                                    for (let i = 1; i < slotIndex; i++) {
+                                        if (!selectedIndices.includes(i) && newSlots[i] !== null) {
+                                            insertPosition++;
+                                        }
+                                    }
 
-                                    // Step 3: Insert selected items at the adjusted position
-                                    const finalSlots = [
-                                        ...remainingSlots.slice(0, adjustedInsertIndex),
+                                    // If target is after the selection, also count the target itself
+                                    if (isTargetAfterSelection && !selectedIndices.includes(slotIndex) && newSlots[slotIndex] !== null) {
+                                        insertPosition++;
+                                    }
+
+                                    // Step 4: Insert selected items at the calculated position
+                                    const finalItems = [
+                                        ...remainingItems.slice(0, insertPosition),
                                         ...selectedItems,
-                                        ...remainingSlots.slice(adjustedInsertIndex)
+                                        ...remainingItems.slice(insertPosition)
                                     ];
 
-                                    // Pad with nulls to maintain 54 slots
-                                    while (finalSlots.length < 54) {
-                                        finalSlots.push(null);
+                                    // Step 5: Build final 54-slot array
+                                    const finalSlots = [null]; // Slot 0
+                                    for (let i = 0; i < 53; i++) {
+                                        finalSlots.push(finalItems[i] || null);
                                     }
-
-                                    // Ensure slot 0 is null
-                                    finalSlots[0] = null;
 
                                     return { ...cell, slots: finalSlots };
                                 } else {
@@ -1270,57 +1470,75 @@
                             let newSlots = [...cell.slots];
 
                             if (isSameCell && cell.id === cellId) {
-                                // Moving within same cell
-                                // Remove the item from source
-                                newSlots.splice(draggedSlot.slotIndex, 1);
-                                newSlots.push(null);
+                                // Moving within same cell - same logic as catalogue drop
+                                const sourceIndex = draggedSlot.slotIndex;
+                                const targetIndex = slotIndex;
 
-                                // Compact slots 1-53, preserve slot 0
-                                const compacted = newSlots.slice(1).filter(slot => slot !== null);
-
-                                // Calculate adjusted insert index
-                                let adjustedIndex = Math.max(0, slotIndex - 1);
-                                if (draggedSlot.slotIndex > 0 && draggedSlot.slotIndex < slotIndex) {
-                                    adjustedIndex--;
-                                }
-                                adjustedIndex = Math.max(0, Math.min(adjustedIndex, compacted.length));
-
-                                // Insert at position
-                                compacted.splice(adjustedIndex, 0, draggedSlot.item);
-
-                                // Pad with nulls
-                                while (compacted.length < 53) {
-                                    compacted.push(null);
+                                if (sourceIndex === targetIndex) {
+                                    // Dropping on same slot - no change
+                                    return cell;
                                 }
 
-                                return { ...cell, slots: [null, ...compacted] };
+                                // Don't allow dropping in slot 0
+                                if (targetIndex === 0) {
+                                    return cell;
+                                }
+
+                                // Save the item being moved
+                                const item = newSlots[sourceIndex];
+
+                                // Create a clean copy without the source item
+                                const slotsWithoutSource = [];
+                                for (let i = 0; i < 54; i++) {
+                                    if (i !== sourceIndex) {
+                                        slotsWithoutSource.push(newSlots[i]);
+                                    }
+                                }
+                                // Now slotsWithoutSource has 53 elements
+
+                                // Build final array by inserting at target position
+                                const finalSlots = [];
+
+                                // Add everything before target
+                                for (let i = 0; i < targetIndex; i++) {
+                                    finalSlots.push(slotsWithoutSource[i]);
+                                }
+
+                                // Insert the item at target
+                                finalSlots.push(item);
+
+                                // Add everything from target onwards
+                                for (let i = targetIndex; i < 53; i++) {
+                                    finalSlots.push(slotsWithoutSource[i]);
+                                }
+
+                                // Ensure slot 0 is null
+                                finalSlots[0] = null;
+
+                                return { ...cell, slots: finalSlots };
                             } else if (cell.id === draggedSlot.cellId) {
-                                // Source cell - remove item and compact
+                                // Source cell - remove item
                                 newSlots[draggedSlot.slotIndex] = null;
-                                const compacted = newSlots.slice(1).filter(slot => slot !== null);
-                                while (compacted.length < 53) {
-                                    compacted.push(null);
-                                }
-                                return { ...cell, slots: [null, ...compacted] };
+                                return { ...cell, slots: newSlots };
                             } else if (cell.id === cellId) {
-                                // Target cell - insert item
-                                const compacted = newSlots.slice(1).filter(slot => slot !== null);
-
-                                // Insert at target position (adjusted for slot 0)
-                                const adjustedSlotIndex = Math.max(0, slotIndex - 1);
-                                compacted.splice(adjustedSlotIndex, 0, draggedSlot.item);
-
-                                // Trim if over 53
-                                if (compacted.length > 53) {
-                                    compacted.length = 53;
+                                // Target cell - insert item at exact position
+                                // Don't allow dropping in slot 0
+                                if (slotIndex === 0) {
+                                    return cell;
                                 }
 
-                                // Pad with nulls
-                                while (compacted.length < 53) {
-                                    compacted.push(null);
+                                // Shift items from the end backwards to make room
+                                for (let i = 53; i > slotIndex; i--) {
+                                    newSlots[i] = newSlots[i - 1];
                                 }
 
-                                return { ...cell, slots: [null, ...compacted] };
+                                // Place the item at the target slot
+                                newSlots[slotIndex] = draggedSlot.item;
+
+                                // Ensure slot 0 is null
+                                newSlots[0] = null;
+
+                                return { ...cell, slots: newSlots };
                             }
 
                             return cell;
@@ -2099,6 +2317,7 @@
                 e.preventDefault();
                 setDragOverCell(null);
 
+                // If dragging a cell (reordering cells)
                 if (draggedCell && draggedCell !== targetCellId) {
                     // Clone cells efficiently using structured clone or simple spread
                     const cellsSnapshot = cells.map(cell => ({
@@ -2120,6 +2339,27 @@
                     newCells.splice(targetIndex, 0, removed);
 
                     setCells(newCells);
+                    setDraggedCell(null);
+                    return;
+                }
+
+                // If dragging an item (from catalogue or slot), add it to the end of the cell
+                if (draggedItem || draggedSlot) {
+                    // Find first empty slot in the cell (starting from slot 1 to skip reserved slot 0)
+                    const targetCell = cells.find(c => c.id === targetCellId);
+                    let firstEmptySlotIndex = -1;
+                    for (let i = 1; i < targetCell.slots.length; i++) {
+                        if (targetCell.slots[i] === null) {
+                            firstEmptySlotIndex = i;
+                            break;
+                        }
+                    }
+
+                    // If no empty slot, use the last slot (will push items out)
+                    const dropSlotIndex = firstEmptySlotIndex !== -1 ? firstEmptySlotIndex : targetCell.slots.length - 1;
+
+                    // Delegate to handleItemDrop
+                    handleItemDrop(e, targetCellId, dropSlotIndex);
                 }
 
                 setDraggedCell(null);
@@ -2444,6 +2684,176 @@
                                                     />
                                                     <span className="text-sm text-stone-300">Epic</span>
                                                 </label>
+                                            </div>
+                                        </div>
+
+                                        {/* Stats Sorting */}
+                                        <div className="mt-2">
+                                            <div className="text-sm font-semibold text-amber-400 mb-1">Player Stats Sort</div>
+                                            <div className="flex gap-4">
+                                                {/* Radio buttons on the left */}
+                                                <div className="flex flex-col gap-2">
+                                                    <label className="flex items-center gap-2 cursor-pointer">
+                                                        <input type="file" accept=".json" onChange={importStats} className="hidden" id="stats-import" />
+                                                        <label htmlFor="stats-import" className="px-3 py-1.5 bg-blue-700 hover:bg-blue-600 rounded text-xs transition-colors whitespace-nowrap cursor-pointer">
+                                                            {playerStats ? 'Stats Loaded ✓' : 'Import Stats'}
+                                                        </label>
+                                                    </label>
+                                                    <label className="flex items-center gap-2 cursor-pointer">
+                                                        <input
+                                                            type="radio"
+                                                            name="statsSort"
+                                                            checked={statsSortMode === 'none'}
+                                                            onChange={() => setStatsSortMode('none')}
+                                                            className="w-4 h-4 cursor-pointer accent-amber-500"
+                                                        />
+                                                        <span className="text-sm text-stone-300">None</span>
+                                                    </label>
+                                                    <label className="flex items-center gap-2 cursor-pointer">
+                                                        <input
+                                                            type="radio"
+                                                            name="statsSort"
+                                                            checked={statsSortMode === 'used'}
+                                                            onChange={() => setStatsSortMode('used')}
+                                                            disabled={!playerStats}
+                                                            className="w-4 h-4 cursor-pointer accent-amber-500 disabled:opacity-50"
+                                                        />
+                                                        <span className={`text-sm ${playerStats ? 'text-stone-300' : 'text-stone-500'}`}>By Used</span>
+                                                    </label>
+                                                    <label className="flex items-center gap-2 cursor-pointer">
+                                                        <input
+                                                            type="radio"
+                                                            name="statsSort"
+                                                            checked={statsSortMode === 'crafted'}
+                                                            onChange={() => setStatsSortMode('crafted')}
+                                                            disabled={!playerStats}
+                                                            className="w-4 h-4 cursor-pointer accent-amber-500 disabled:opacity-50"
+                                                        />
+                                                        <span className={`text-sm ${playerStats ? 'text-stone-300' : 'text-stone-500'}`}>By Crafted</span>
+                                                    </label>
+                                                    <label className="flex items-center gap-2 cursor-pointer">
+                                                        <input
+                                                            type="radio"
+                                                            name="statsSort"
+                                                            checked={statsSortMode === 'acquired'}
+                                                            onChange={() => setStatsSortMode('acquired')}
+                                                            disabled={!playerStats}
+                                                            className="w-4 h-4 cursor-pointer accent-amber-500 disabled:opacity-50"
+                                                        />
+                                                        <span className={`text-sm ${playerStats ? 'text-stone-300' : 'text-stone-500'}`}>By Possession</span>
+                                                    </label>
+                                                </div>
+
+                                                {/* Stats Percentage Range Slider on the right */}
+                                                {statsSortMode !== 'none' && playerStats && (
+                                                    <div className="flex flex-col items-center gap-1">
+                                                        <div className="text-xs text-stone-400">Range %</div>
+                                                        <div className="relative flex items-center gap-1" style={{ height: '140px' }}>
+                                                            {/* Range indicator box */}
+                                                            <div
+                                                                className="absolute border border-amber-500 pointer-events-none"
+                                                                style={{
+                                                                    left: '-4px',
+                                                                    right: '-4px',
+                                                                    top: `${((1 - statsPercentRange[1] / 100) * 100 * 128 / 140)}px`,
+                                                                    bottom: `${statsPercentRange[0] === null ? 0 : ((statsPercentRange[0] / 100) * 128 + 12)}px`
+                                                                }}
+                                                            ></div>
+
+                                                            {/* Left handle for min value */}
+                                                            <div
+                                                                className="w-3 h-3 bg-amber-500 rounded-full cursor-ns-resize z-20 hover:bg-amber-400 transition-colors border-2 border-black"
+                                                                style={{
+                                                                    position: 'absolute',
+                                                                    left: '-4px',
+                                                                    top: `${statsPercentRange[0] === null ? 134 : ((1 - statsPercentRange[0] / 100) * 128)}px`,
+                                                                    transform: 'translateY(-50%)'
+                                                                }}
+                                                                onMouseDown={(e) => {
+                                                                    e.preventDefault();
+                                                                    const container = e.currentTarget.parentElement;
+                                                                    const rect = container.getBoundingClientRect();
+                                                                    const handleMove = (moveEvent) => {
+                                                                        const y = moveEvent.clientY - rect.top;
+                                                                        // Container is 140px: 128px for 0-100 range + 12px NA block at bottom
+                                                                        const sliderHeight = 128;
+                                                                        const naBlockHeight = 12;
+                                                                        let value;
+
+                                                                        if (y > sliderHeight + naBlockHeight / 2) {
+                                                                            // In NA zone (bottom 12px block)
+                                                                            value = null;
+                                                                        } else if (y > sliderHeight - 2) {
+                                                                            // Snap zone near boundary between 0 and NA
+                                                                            value = 0;
+                                                                        } else {
+                                                                            // Normal 0-100 range (top 128px)
+                                                                            const rawValue = (1 - y / sliderHeight) * 100;
+                                                                            value = Math.max(0, Math.min(100, Math.round(rawValue)));
+                                                                        }
+
+                                                                        const maxVal = statsPercentRange[1];
+                                                                        if (value === null || value < maxVal) {
+                                                                            setStatsPercentRange([value, maxVal]);
+                                                                        }
+                                                                    };
+                                                                    const handleUp = () => {
+                                                                        document.removeEventListener('mousemove', handleMove);
+                                                                        document.removeEventListener('mouseup', handleUp);
+                                                                    };
+                                                                    handleMove(e);
+                                                                    document.addEventListener('mousemove', handleMove);
+                                                                    document.addEventListener('mouseup', handleUp);
+                                                                }}
+                                                            ></div>
+
+                                                            {/* Slider track */}
+                                                            <div className="relative w-6 flex flex-col" style={{ height: '140px' }}>
+                                                                {/* 0-100 range (128px) */}
+                                                                <div className="relative rounded-t overflow-hidden" style={{ height: '128px' }}>
+                                                                    <div className="absolute inset-0 bg-gradient-to-b from-blue-600 to-blue-900"></div>
+                                                                </div>
+                                                                {/* NA block (12px) */}
+                                                                <div className="relative rounded-b overflow-hidden bg-gray-700" style={{ height: '12px' }}>
+                                                                    <div className="absolute inset-0 flex items-center justify-center">
+                                                                        <span className="text-[8px] font-bold text-gray-400">NA</span>
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+
+                                                            {/* Right handle for max value */}
+                                                            <div
+                                                                className="w-3 h-3 bg-amber-500 rounded-full cursor-ns-resize z-20 hover:bg-amber-400 transition-colors border-2 border-black"
+                                                                style={{
+                                                                    position: 'absolute',
+                                                                    right: '-4px',
+                                                                    top: `${((1 - statsPercentRange[1] / 100) * 128)}px`,
+                                                                    transform: 'translateY(-50%)'
+                                                                }}
+                                                                onMouseDown={(e) => {
+                                                                    e.preventDefault();
+                                                                    const container = e.currentTarget.parentElement;
+                                                                    const rect = container.getBoundingClientRect();
+                                                                    const handleMove = (moveEvent) => {
+                                                                        const y = Math.max(0, Math.min(128, moveEvent.clientY - rect.top));
+                                                                        const sliderHeight = 128;
+                                                                        const value = Math.round((1 - y / sliderHeight) * 100);
+                                                                        const minVal = statsPercentRange[0] === null ? 0 : statsPercentRange[0];
+                                                                        setStatsPercentRange([statsPercentRange[0], Math.max(value, minVal)]);
+                                                                    };
+                                                                    const handleUp = () => {
+                                                                        document.removeEventListener('mousemove', handleMove);
+                                                                        document.removeEventListener('mouseup', handleUp);
+                                                                    };
+                                                                    handleMove(e);
+                                                                    document.addEventListener('mousemove', handleMove);
+                                                                    document.addEventListener('mouseup', handleUp);
+                                                                }}
+                                                            ></div>
+                                                        </div>
+                                                        <div className="text-xs text-stone-400 w-12 text-center">{statsPercentRange[0] === null ? 'NA' : statsPercentRange[0]}-{statsPercentRange[1]}</div>
+                                                    </div>
+                                                )}
                                             </div>
                                         </div>
 
