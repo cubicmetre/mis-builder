@@ -1,0 +1,6 @@
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <text x="2" y="8" fontSize="7" fill="currentColor" fontFamily="monospace">_B</text>
+    <text x="2" y="16" fontSize="7" fill="currentColor" fontFamily="monospace">_B</text>
+    <text x="2" y="24" fontSize="7" fill="currentColor" fontFamily="monospace">_C</text>
+    <path d="M 16 8 L 20 12 L 16 16" strokeLinecap="round" strokeLinejoin="round"></path>
+  </svg>

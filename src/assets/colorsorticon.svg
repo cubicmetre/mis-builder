@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+  <rect x="3" y="3" width="7" height="7" fill="#ff6b6b" stroke="none"></rect>
+  <rect x="14" y="3" width="7" height="7" fill="#ffd93d" stroke="none"></rect>
+  <rect x="3" y="14" width="7" height="7" fill="#6bcf7f" stroke="none"></rect>
+  <rect x="14" y="14" width="7" height="7" fill="#4d96ff" stroke="none"></rect>
+</svg>

@@ -1,0 +1,18 @@
+.pixelated {
+        image-rendering: pixelated;
+        image-rendering: -moz-crisp-edges;
+        image-rendering: crisp-edges;
+}
+
+.dragging-cell {
+        opacity: 0.5;
+}
+
+.drag-over-cell {
+        outline: 3px solid #f59e0b;
+        outline-offset: 2px;
+}
+
+.dragging-item {
+        opacity: 0.4;
+}
