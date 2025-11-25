@@ -742,6 +742,14 @@ export default function MinecraftItemBuilder() {
     setHistory(newHistory);
   };
 
+  // Undo the last action
+  const undo = () => {
+    if (history.length > 0) {
+      const previousState = history[history.length - 1];
+      setCells(previousState);
+      setHistory(history.slice(0, -1)); // Remove the state we just restored
+    }
+  };
 
   // Ctrl+Z handler
   useEffect(() => {
@@ -752,14 +760,6 @@ export default function MinecraftItemBuilder() {
       }
     };
 
-    // Undo function
-    const undo = () => {
-      if (history.length > 0) {
-        const previousState = history[history.length - 1];
-        setCells(previousState);
-        setHistory(history.slice(0, -1)); // Remove the state we just restored
-      }
-    };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [history, cells]);
