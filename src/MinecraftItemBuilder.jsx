@@ -2773,6 +2773,15 @@ export default function MinecraftItemBuilder() {
                   Advanced Filters
                 </button>
 
+                {/* Undo Button */}
+                <button
+                  onClick={undo}
+                  className="px-3 py-1.5 bg-stone-700 hover:bg-stone-600 rounded text-xs transition-colors whitespace-nowrap"
+                  title="Undo last action"
+                >
+                  Undo
+                </button>
+
                 {/* Export Button */}
                 <button
                   onClick={exportCells}
