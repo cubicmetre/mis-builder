@@ -1635,9 +1635,51 @@ export default function MinecraftItemBuilder() {
       }
     }
 
+    // Check if we're already a single item away from increasing the signal.
+    // This prevents re-running the optimizer from endlessly duplicating unstackables.
+    const baseSignal = calculateSignalStrength(optimizedSlots);
+    let oneItemTriggersIncrease = false;
+
+    // Use the lowest-impact item (largest stack size) for a worst-case addition test
+    const smallestImpactItem = optimizedSlots
+      .slice(1)
+      .filter(item => item !== null)
+      .sort((a, b) => (b.stack_size || 64) - (a.stack_size || 64))[0];
+
+    if (smallestImpactItem) {
+      const testSlots = optimizedSlots.map(slot => slot ? { ...slot } : null);
+      const stackLimit = smallestImpactItem.stack_size || 64;
+      let added = false;
+
+      // Try topping up an existing stack of this item first
+      for (let i = 1; i < testSlots.length; i++) {
+        if (testSlots[i] &&
+          testSlots[i].id === smallestImpactItem.id &&
+          testSlots[i].quantity < stackLimit) {
+          testSlots[i].quantity++;
+          added = true;
+          break;
+        }
+      }
+
+      // Otherwise, drop a new stack into an empty slot
+      if (!added) {
+        const emptyIndex = testSlots.findIndex((slot, idx) => idx > 0 && slot === null);
+        if (emptyIndex !== -1) {
+          testSlots[emptyIndex] = { ...smallestImpactItem, quantity: 1 };
+          added = true;
+        }
+      }
+
+      if (added) {
+        const testSignal = calculateSignalStrength(testSlots);
+        oneItemTriggersIncrease = testSignal > baseSignal;
+      }
+    }
+
     // Strategy 4: Duplicate stackables if needed (only if no quantity adjustments exist)
     // This runs if all existing stacks are maxed and we still haven't reached threshold
-    if (!hasQuantityAdjustments) {
+    if (!hasQuantityAdjustments && !oneItemTriggersIncrease) {
       let finalSignal = calculateSignalStrength(optimizedSlots);
       if (finalSignal === currentSignal) {
         // Check if all items are at their stack limits
@@ -3401,4 +3443,3 @@ export default function MinecraftItemBuilder() {
     </div>
   );
 }
-
