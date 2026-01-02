@@ -1,5 +1,5 @@
 # Logs
-logs
+/logs
 *.log
 npm-debug.log*
 yarn-debug.log*
@@ -11,10 +11,13 @@ lerna-debug.log*
 node_modules
 
 # Build artifacts
-dist
-dist-ssr
+/dist
+/dist-ssr
 *.local
 *.tsbuildinfo
+
+# Test coverage artifacts
+/coverage
 
 # Editor directories and files
 .vscode/*
