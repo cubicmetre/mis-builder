@@ -1,1 +1,5 @@
- @import "tailwindcss";
+@import "tailwindcss";
+
+:root {
+  color-scheme: only dark;
+}
