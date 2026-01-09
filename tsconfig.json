@@ -15,7 +15,8 @@
       "DOM.Iterable"
     ],
     "types": [
-      "vite/client"
+      "vite/client",
+      "vitest/importMeta"
     ],
     "plugins": [
       {

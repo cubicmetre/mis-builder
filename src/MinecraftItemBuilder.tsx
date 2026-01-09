@@ -41,7 +41,7 @@ export interface Slot extends Item {
   quantity?: number;
   isDuplicate?: true;
   originalIndex?: number;
-  userSubstituted?: true;
+  userSubstituted?: true; // TODO: This really doesn't do much. Use it or delete it
 }
 
 // A Slot with extra data for redstone signal optimization
@@ -94,6 +94,7 @@ export type DraggedSlot =
 
 // Calculate redstone signal strength for a container
 // Based on: floor(14/inv_size * reduce(items, (item:1)/min(64, stack_limit(item:0)) + _a, 0) + min(1, length(items)))
+// TODO: Make a function that checks if a cell is on the threshold for a signal change
 export function calculateSignalStrength(slots: (Slot | null)[]) {
   const invSize = 54;
   const items = slots.filter((item) => item !== null);
@@ -231,6 +232,250 @@ const getColorDistance = (
   // Weighted Euclidean distance (hue is more important for visual similarity)
   return Math.sqrt((hueDiff * 2) ** 2 + satDiff ** 2 + lumDiff ** 2);
 };
+
+const rarityOrder: Dictionary<number> = {
+  common: 0,
+  uncommon: 1,
+  rare: 2,
+  epic: 3,
+};
+export function getRarityOrder(rarity: string | null | undefined) {
+  if (rarity == null) return 0;
+  return rarityOrder[rarity] ?? 0;
+}
+
+// Optimize container to ensure adding one more item increments signal strength
+export function optimizeForRedstone(
+  slots: (Slot | null)[]
+): (OptimizedSlot | null)[] {
+  if (slots.every((x) => x == null)) return slots;
+
+  // Always use the simpler logic: items are adjusted if they have quantity > 1 OR multiple instances exist
+  const optimizedSlots: (OptimizedSlot | null)[] = slots.map((item, idx) =>
+    item
+      ? {
+          ...item,
+          quantity: item.quantity || 1,
+          originalIndex: item.originalIndex ?? idx,
+        }
+      : null
+  );
+  let currentSignal = calculateSignalStrength(optimizedSlots);
+
+  // Count occurrences of each item ID
+  function itemCounts() {
+    return optimizedSlots
+      .filter((item) => item != null)
+      .reduce<Dictionary<number>>((acc, item) => {
+        acc[item.id] = (acc[item.id] ?? 0) + 1;
+        return acc;
+      }, {});
+  }
+
+  // Mark items that are already adjusted (have quantity > 1 OR multiple instances)
+  // These are items we want to preserve from substitution
+  // TODO: This is used several times. Turn it into a function
+  for (const item of optimizedSlots.filter((item) => item != null)) {
+    const hasQuantity = item.quantity > 1;
+    const hasMultipleInstances = (itemCounts()[item.id] ?? 0) > 1;
+    item.forceAdjusted = hasQuantity || hasMultipleInstances;
+  }
+
+  // Check if we have any items with quantity adjustments (not just duplicates)
+  const hasQuantityAdjustments = optimizedSlots.some(
+    (item) => (item?.quantity ?? 0) > 1
+  );
+
+  // If we don't have quantity adjustments, mark ALL items as candidates
+  // TODO: This overwrites the work of the previous loop. Put both in an if/else. Don't do it twice.
+  if (!hasQuantityAdjustments) {
+    // Mark ALL items as candidates for adjustment
+    for (const item of optimizedSlots.filter((item) => item != null)) {
+      item.forceAdjusted = true;
+    }
+  }
+
+  // If we have user substitutions, only use items with forceAdjusted (preserves user choices)
+  // Find items that should be adjusted
+  const forcedItems = optimizedSlots
+    .filter((item) => item != null) // Split off so it is recognized as a type predicate
+    .filter((item) => item.forceAdjusted);
+
+  // TODO: Use filter() instead and check the length (we'll need the filtered array anyway)
+  const hasUnstackable = forcedItems.some((item) => item.stack_size === 1);
+  const hasSixteen = forcedItems.some((item) => item.stack_size === 16);
+  const hasSixtyFour = forcedItems.some((item) => item.stack_size === 64);
+
+  // TODO: It works, but it's ugly
+  let AreUnstackablesAtThreshold = false;
+  let Are16StackablesAtThreshold = false;
+  let Are64StackablesAtThreshold = false;
+
+  // Strategy 1: Duplicate unstackables if available (only if no quantity adjustments exist)
+  if (hasUnstackable && !hasQuantityAdjustments) {
+    // Find the most common unstackable to duplicate (prefer lower rarity)
+    const unstackables = forcedItems.filter((item) => item.stack_size === 1);
+    const targetUnstackable = unstackables.reduce(
+      (acc, item) =>
+        getRarityOrder(item?.rarity) < getRarityOrder(acc?.rarity) ? item : acc,
+      unstackables[0]
+    );
+
+    if (targetUnstackable) {
+      // Fill empty slots with this unstackable until signal increments
+      for (const [i, _] of optimizedSlots
+        .entries()
+        .drop(1)
+        .filter(([_, item]) => item == null)) {
+        optimizedSlots[i] = {
+          ...targetUnstackable,
+          quantity: 1,
+          originalIndex: -1,
+          isDuplicate: true,
+          forceAdjusted: true,
+        };
+        const newSignal = calculateSignalStrength(optimizedSlots);
+        if (newSignal > currentSignal) {
+          // Remove this last one so we're at the threshold
+          optimizedSlots[i] = null;
+          AreUnstackablesAtThreshold = true;
+          break;
+        }
+      }
+    }
+  }
+
+  // Strategy 2: Increment 16-stackables from the END
+  // TODO: Strategy 2 and 3 (and maybe even 1) are very similar and could be unified into one function
+  if (hasSixteen) {
+    outer: for (const item of optimizedSlots
+      .slice(1)
+      .reverse()
+      .filter((item) => item != null) // Split off so it is recognized as a type predicate
+      .filter(
+        (item) => item.forceAdjusted === true && item.stack_size === 16
+      )) {
+      // Increment until we reach the stack-size or find the threshold
+      while (item.quantity < 16) {
+        item.quantity++;
+        const newSignal = calculateSignalStrength(optimizedSlots);
+        if (newSignal > currentSignal) {
+          // We found the signal threshold, so we undo the last quantity increment then bail
+          item.quantity--;
+          Are16StackablesAtThreshold = true;
+          break outer;
+        }
+      }
+    }
+  }
+
+  // Strategy 3: Increment 64-stackables from the END
+  if (hasSixtyFour) {
+    outer: for (const item of optimizedSlots
+      .slice(1)
+      .reverse()
+      .filter((item) => item != null) // Split off so it is recognized as a type predicate
+      .filter((item) => item.forceAdjusted && item.stack_size === 64)) {
+      // Increment until we reach the stack-size or find the threshold
+      while (item.quantity < 64) {
+        item.quantity++;
+        const newSignal = calculateSignalStrength(optimizedSlots);
+        if (newSignal > currentSignal) {
+          // We found the signal threshold, so we undo the last quantity increment then bail
+          item.quantity--;
+          Are64StackablesAtThreshold = true;
+          break outer;
+        }
+      }
+    }
+  }
+
+  // Strategy 4: Duplicate stackables if needed (only if no quantity adjustments exist)
+  // This runs if all existing stacks are maxed and we still haven't reached threshold
+  if (
+    !hasQuantityAdjustments &&
+    ((!AreUnstackablesAtThreshold && hasUnstackable) ||
+      (!Are16StackablesAtThreshold && hasSixteen) ||
+      (!Are64StackablesAtThreshold && hasSixtyFour))
+  ) {
+    // Check if all items are at their stack limits
+    // TODO: This check is probably redundant. Write tests.
+    let allMaxed = !optimizedSlots.some(
+      (item) => item?.forceAdjusted && item.quantity < item.stack_size
+    );
+
+    // Only duplicate if all existing stacks are maxed
+    if (allMaxed) {
+      // Find an item to duplicate. Prefer larger stack sizes then lower rarity
+      const itemToDuplicate = forcedItems.reduce((acc, item) =>
+        item.stack_size >= acc.stack_size &&
+        getRarityOrder(item.rarity) < getRarityOrder(acc.rarity)
+          ? item
+          : acc
+      );
+
+      // Duplicate items until adding a full stack would increment signal
+      for (let [i, _] of optimizedSlots
+        .entries()
+        .drop(1)
+        .filter(([_, item]) => item == null)) {
+        const newItem: OptimizedSlot = (optimizedSlots[i] = {
+          ...itemToDuplicate,
+          originalIndex: -1,
+          forceAdjusted: true,
+        });
+        const newSignal = calculateSignalStrength(optimizedSlots);
+        if (newSignal > currentSignal) {
+          // Keep this stack but set quantity to 1, then Strategy 5 will fine-tune it
+          // TODO: Why not do Strategy 5 here?
+          newItem.quantity = 1;
+          break;
+        }
+      }
+    }
+  }
+
+  // Strategy 5: Final increment pass on all forced items from the END
+  outer: for (const item of optimizedSlots
+    .filter((item) => item != null)
+    .filter((item) => item.forceAdjusted && item.quantity < item.stack_size)
+    .reverse()) {
+    while (item.quantity < item.stack_size) {
+      item.quantity++;
+      const newSignal = calculateSignalStrength(optimizedSlots);
+      if (newSignal > currentSignal) {
+        item.quantity--;
+        break outer;
+      }
+    }
+  }
+
+  // Recalculate forceAdjusted flags AFTER quantities have been adjusted
+  // An item is adjusted if: (1) quantity > 1, OR (2) multiple instances exist
+  for (const item of optimizedSlots.filter((item) => item != null)) {
+    const hasQuantity = item.quantity > 1;
+    const hasMultipleInstances = (itemCounts()[item.id] ?? 0) > 1;
+    item.forceAdjusted = hasQuantity || hasMultipleInstances;
+  }
+
+  // Organize into adjusted vs unadjusted
+  const withoutNulls = optimizedSlots.filter((item) => item != null);
+  withoutNulls.forEach(
+    (item) => (item.isAdjusted = item.forceAdjusted === true)
+  );
+  const adjusted = withoutNulls.filter((item) => item.forceAdjusted);
+  const unadjusted = withoutNulls.filter((item) => !item.forceAdjusted);
+
+  // Sort adjusted items from smallest stack size then smallest quantities
+  adjusted.sort((a, b) => {
+    if (a.stack_size !== b.stack_size) return a.stack_size - b.stack_size;
+    return a.quantity - b.quantity;
+  });
+
+  // Calculate null padding
+  const nullsNeeded = 53 - unadjusted.length - adjusted.length;
+  return [null, ...unadjusted, ...Array(nullsNeeded).fill(null), ...adjusted];
+}
 
 export default function MinecraftItemBuilder() {
   const [catalogueItems, setCatalogueItems] = useState<Item[]>([]);
@@ -1545,322 +1790,6 @@ export default function MinecraftItemBuilder() {
     setDraggedSlot(null);
   };
 
-  // Optimize container to ensure adding one more item increments signal strength
-  const optimizeForRedstone = (
-    slots: (Slot | null)[]
-  ): (OptimizedSlot | null)[] => {
-    if (slots.every((x) => x == null)) return slots;
-
-    // Always use the simpler logic: items are adjusted if they have quantity > 1 OR multiple instances exist
-    let optimizedSlots: (OptimizedSlot | null)[] = slots.map((item, idx) =>
-      item
-        ? { ...item, quantity: item.quantity || 1, originalIndex: idx }
-        : null
-    );
-    let currentSignal = calculateSignalStrength(optimizedSlots);
-
-    // Count occurrences of each item ID
-    const itemCounts: Dictionary<number> = {};
-    // TODO: use for(const item of optimizedSlots) or maybe even optimizedSlots.reduce()?
-    for (let i = 1; i < optimizedSlots.length; i++) {
-      const item = optimizedSlots[i];
-      if (item) {
-        itemCounts[item.id] = (itemCounts[item.id] || 0) + 1;
-      }
-    }
-
-    // Mark items that are already adjusted (have quantity > 1 OR multiple instances)
-    // These are items we want to preserve from substitution
-    // TODO: for(const item of optimizedSlots.filter((item) => item != null))
-    for (let i = 1; i < optimizedSlots.length; i++) {
-      const item = optimizedSlots[i];
-      if (item) {
-        const hasMultipleInstances = itemCounts[item.id] ?? 0 > 1;
-        const hasQuantity = (item.quantity || 1) > 1;
-        if (hasQuantity || hasMultipleInstances) {
-          item.forceAdjusted = true;
-        }
-      }
-    }
-
-    // Check if we have any items with quantity adjustments (not just duplicates)
-    const hasQuantityAdjustments = optimizedSlots.some(
-      (item) => item && (item.quantity || 1) > 1
-    );
-
-    // Check if we have any user-substituted items (from manual drag-drop substitution)
-    const hasUserSubstituted = optimizedSlots.some(
-      (item) => item && item.userSubstituted === true
-    );
-
-    // If we don't have quantity adjustments AND no user substitutions, mark ALL items as candidates
-    if (!hasQuantityAdjustments && !hasUserSubstituted) {
-      // Mark ALL items as candidates for adjustment
-      // TODO: for(const item of optimizedSlots.filter((item) => item != null))
-      for (let i = optimizedSlots.length - 1; i >= 1; i--) {
-        const item = optimizedSlots[i];
-        if (item) {
-          item.forceAdjusted = true;
-        }
-      }
-    }
-    // If we have user substitutions, only use items with forceAdjusted (preserves user choices)
-
-    // Find items that should be adjusted
-    const forcedItems = optimizedSlots.filter(
-      (item) => item && item.forceAdjusted === true
-    );
-    const hasUnstackable = forcedItems.some(
-      (item) => (item?.stack_size || 64) === 1
-    );
-    const hasSixteen = forcedItems.some(
-      (item) => (item?.stack_size || 64) === 16
-    );
-    const hasSixtyFour = forcedItems.some(
-      (item) => (item?.stack_size || 64) === 64
-    );
-
-    // Strategy 1: Duplicate unstackables if available (only if no quantity adjustments exist)
-    if (hasUnstackable && !hasQuantityAdjustments) {
-      // Find the most common unstackable to duplicate (prefer lower rarity)
-      const unstackables = forcedItems.filter(
-        (item) => (item?.stack_size || 64) === 1
-      );
-      const rarityOrder: Dictionary<number> = {
-        common: 0,
-        uncommon: 1,
-        rare: 2,
-        epic: 3,
-      };
-      const getRarityOrder = (item: Item | null) =>
-        item ? rarityOrder[item.rarity] ?? 0 : 0;
-      //TODO: reduce() instead of sort() to get the least rare
-      const targetUnstackable = unstackables.sort((a, b) => {
-        return getRarityOrder(a) - getRarityOrder(b);
-      })[0];
-
-      if (targetUnstackable) {
-        // Fill empty slots with this unstackable until signal increments
-        // TODO: This probably could be replaced with a map()
-        for (let i = 1; i < optimizedSlots.length; i++) {
-          if (optimizedSlots[i] === null) {
-            optimizedSlots[i] = {
-              ...targetUnstackable,
-              quantity: 1,
-              originalIndex: -1,
-              isDuplicate: true,
-              forceAdjusted: true,
-            };
-            const newSignal = calculateSignalStrength(optimizedSlots);
-            if (newSignal > currentSignal) {
-              // Remove this last one so we're at the threshold
-              optimizedSlots[i] = null;
-              break;
-            }
-          }
-        }
-      }
-    }
-
-    // Strategy 2: Increment 16-stackables from the END
-    if (hasSixteen) {
-      while (true) {
-        let incremented = false;
-        // TODO: Use for(const item of optimizedSlots.reverse().filter(...))
-        for (let i = optimizedSlots.length - 1; i >= 1; i--) {
-          const item = optimizedSlots[i];
-          if (
-            item &&
-            item.forceAdjusted === true &&
-            (item.stack_size || 64) === 16
-          ) {
-            if (item.quantity < 16) {
-              item.quantity++;
-              const newSignal = calculateSignalStrength(optimizedSlots);
-              if (newSignal > currentSignal) {
-                item.quantity--;
-                break;
-              }
-              incremented = true;
-              break;
-            }
-          }
-        }
-        if (!incremented) break;
-      }
-    }
-
-    // Strategy 3: Increment 64-stackables from the END
-    if (hasSixtyFour) {
-      while (true) {
-        let incremented = false;
-        // TODO: Use for(const item of optimizedSlots.reverse().filter(...))
-        for (let i = optimizedSlots.length - 1; i >= 1; i--) {
-          const item = optimizedSlots[i];
-          if (
-            item &&
-            item.forceAdjusted === true &&
-            (item.stack_size || 64) === 64
-          ) {
-            if (item.quantity < 64) {
-              item.quantity++;
-              const newSignal = calculateSignalStrength(optimizedSlots);
-              if (newSignal > currentSignal) {
-                item.quantity--;
-                break;
-              }
-              incremented = true;
-              break;
-            }
-          }
-        }
-        if (!incremented) break;
-      }
-    }
-
-    // Strategy 4: Duplicate stackables if needed (only if no quantity adjustments exist)
-    // This runs if all existing stacks are maxed and we still haven't reached threshold
-    if (!hasQuantityAdjustments) {
-      let finalSignal = calculateSignalStrength(optimizedSlots);
-      if (finalSignal === currentSignal) {
-        // Check if all items are at their stack limits
-        let allMaxed = true;
-        // TODO: allMaxed = !optimizedSlots.some((item) => item && item.forceAdjusted === true && item.quantity < (item.stack_size || 64))
-        for (let i = 1; i < optimizedSlots.length; i++) {
-          const item = optimizedSlots[i];
-          if (item && item.forceAdjusted === true) {
-            const stackLimit = item.stack_size || 64;
-            if (item.quantity < stackLimit) {
-              allMaxed = false;
-              break;
-            }
-          }
-        }
-
-        // Only duplicate if all existing stacks are maxed
-        if (allMaxed) {
-          // Try duplicating items (prefer lower rarity and smaller stack sizes)
-          const availableItems = forcedItems
-            .filter((item) => item !== null)
-            .sort((a, b) => {
-              // TODO: Make a reusable getRarityOrder function, instead of duplicating this
-              const rarityOrder: Dictionary<number> = {
-                common: 0,
-                uncommon: 1,
-                rare: 2,
-                epic: 3,
-              };
-              const rarityA = rarityOrder[a.rarity] || 0;
-              const rarityB = rarityOrder[b.rarity] || 0;
-              if (rarityA !== rarityB) return rarityA - rarityB;
-              const stackA = a.stack_size || 64;
-              const stackB = b.stack_size || 64;
-              return stackA - stackB;
-            });
-
-          // Try duplicating items until adding a full stack would increment signal
-          for (const itemToDuplicate of availableItems) {
-            // TODO: Ideally this should be a map()
-            for (let i = 1; i < optimizedSlots.length; i++) {
-              if (optimizedSlots[i] === null) {
-                const item: OptimizedSlot = (optimizedSlots[i] = {
-                  ...itemToDuplicate,
-                  originalIndex: -1,
-                  forceAdjusted: true,
-                });
-                const newSignal = calculateSignalStrength(optimizedSlots);
-                if (newSignal > currentSignal) {
-                  // Keep this stack but set quantity to 1, then Strategy 5 will fine-tune it
-                  item.quantity = 1; // Yes, this updates optimizedSlots. Not ideal but it works for now.
-                  break;
-                }
-              }
-            }
-            // Check if we've reached the threshold
-            if (calculateSignalStrength(optimizedSlots) > currentSignal) {
-              break;
-            }
-          }
-        }
-      }
-    }
-
-    // Strategy 5: Final increment pass on all forced items from the END
-    currentSignal = calculateSignalStrength(optimizedSlots);
-    let reachedThreshold = false;
-    while (true) {
-      let incremented = false;
-      // TODO: Use for(const item of optimizedSlots.reverse().filter(...))
-      for (let i = optimizedSlots.length - 1; i >= 1; i--) {
-        const item = optimizedSlots[i];
-        if (item && item.forceAdjusted === true) {
-          const stackLimit = item.stack_size || 64;
-          if (item.quantity < stackLimit) {
-            item.quantity++;
-            const newSignal = calculateSignalStrength(optimizedSlots);
-            if (newSignal > currentSignal) {
-              item.quantity--;
-              reachedThreshold = true;
-              break;
-            }
-            incremented = true;
-            break;
-          }
-        }
-      }
-      if (!incremented || reachedThreshold) break;
-    }
-
-    // Recalculate forceAdjusted flags AFTER quantities have been adjusted
-    // An item is adjusted if: (1) quantity > 1, OR (2) multiple instances exist
-    // TODO: Use a for-of
-    for (let i = 1; i < optimizedSlots.length; i++) {
-      const item = optimizedSlots[i];
-      if (item) {
-        const hasMultipleInstances = (itemCounts[item.id] ?? 0) > 1;
-        const hasQuantity = (item.quantity || 1) > 1;
-        item.forceAdjusted = hasQuantity || hasMultipleInstances;
-      }
-    }
-
-    // Organize into adjusted vs unadjusted
-    const unadjusted = [];
-    const adjusted = [];
-    // TODO: Simply fill adjusted and unadjusted with optimizedSlots.filter().map()
-    for (let i = 1; i < optimizedSlots.length; i++) {
-      const item = optimizedSlots[i];
-      if (item != null) {
-        if (item.forceAdjusted === true) {
-          item.isAdjusted = true;
-          adjusted.push(item);
-        } else {
-          item.isAdjusted = false;
-          unadjusted.push(item);
-        }
-      }
-    }
-
-    // Sort adjusted items
-    adjusted.sort((a, b) => {
-      const aStack = a.stack_size || 64;
-      const bStack = b.stack_size || 64;
-      if (aStack === 1 && bStack !== 1) return -1;
-      if (aStack !== 1 && bStack === 1) return 1;
-      return a.quantity - b.quantity;
-    });
-
-    // Calculate null padding
-    const nullsNeeded = 53 - unadjusted.length - adjusted.length; // TODO: Maybe clamp minimum value to 0
-    // TODO: return [null, ...unadjusted, ...Array(nullsNeeded).fill(null)), ...adjusted]
-    const result = [null, ...unadjusted];
-    for (let i = 0; i < nullsNeeded; i++) {
-      result.push(null);
-    }
-    result.push(...adjusted);
-
-    return result;
-  };
-
   // Sort cell items by color similarity (greedy nearest neighbor)
   const sortCellByColor = (cellId: number) => {
     saveToHistory();
@@ -2832,7 +2761,7 @@ export default function MinecraftItemBuilder() {
               baseSource.quantity = targetQuantity;
             }
             // Target goes to source position in unadjusted section
-            // TODO: Don't delete props. Just change their values to null or something
+            // TODO: Don't delete props. Just change their values to null or false
             delete baseTarget.forceAdjusted;
             delete baseTarget.userSubstituted;
 
