@@ -1,7 +1,6 @@
-import { describe, expect, test, type TestContext } from "vitest";
+import { describe, expect, test } from "vitest";
 import {
   calculateSignalStrength,
-  getRarityOrder,
   optimizeForRedstone,
   type OptimizedSlot,
   type Slot,
