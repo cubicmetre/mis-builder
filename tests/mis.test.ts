@@ -67,15 +67,10 @@ describe("Tests for calculateSignalStrength()", () => {
 });
 
 describe("Correct redstone signals after calling optimizeForRedstone()", () => {
-  function testSignals(
-    slots: (OptimizedSlot | null)[],
-    { annotate }: TestContext & object
-  ) {
-    const n = slots.filter((x) => x != null).length;
+  function testSignals(slots: (OptimizedSlot | null)[]) {
     const previousSignal = calculateSignalStrength(slots);
     const optimizedSlots = optimizeForRedstone(slots);
     const optimizedSignal = calculateSignalStrength(optimizedSlots);
-    const optimizedNbItems = optimizedSlots.filter((x) => x != null).length;
 
     // Get the item with the largest stack size to give the smallest signal increment
     const largestStackSizeItem = optimizedSlots
@@ -91,12 +86,6 @@ describe("Correct redstone signals after calling optimizeForRedstone()", () => {
 
     const optimizedSignalPlus1 = calculateSignalStrength(optimizedSlots);
 
-    annotate(`n == ${n}`);
-    annotate(`previousSignal == ${previousSignal}`);
-    annotate(`optimizedNbItems == ${optimizedNbItems}`);
-    annotate(`optimizedSignal == ${optimizedSignal}`);
-    annotate(`optimizedSignalPlus1 == ${optimizedSignalPlus1}`);
-
     expect(optimizedSignal, "Signal strength changed after optimization").toBe(
       previousSignal
     );
@@ -107,37 +96,37 @@ describe("Correct redstone signals after calling optimizeForRedstone()", () => {
 
   test.for(Array.from({ length: 53 }, (_, i) => i + 1))(
     "Optimized container with %j unstackables increases its Redstone signal when one more item is added",
-    (n, context) => {
+    (n) => {
       const slots = [
         null,
         ...Array(n).fill(unstackableItem),
         ...Array(53 - n).fill(null),
       ];
-      testSignals(slots, context);
+      testSignals(slots);
     }
   );
 
   test.for(Array.from({ length: 53 }, (_, i) => i + 1))(
     "Optimized container with %j 16-stackables increases its Redstone signal when one more item is added",
-    (n, context) => {
+    (n) => {
       const slots = [
         null,
         ...Array(n).fill(stackable16Item),
         ...Array(53 - n).fill(null),
       ];
-      testSignals(slots, context);
+      testSignals(slots);
     }
   );
 
   test.for(Array.from({ length: 53 }, (_, i) => i + 1))(
     "Optimized container with %j 64-stackables increases its Redstone signal when one more item is added",
-    (n, context) => {
+    (n) => {
       const slots = [
         null,
         ...Array(n).fill(stackable64Item),
         ...Array(53 - n).fill(null),
       ];
-      testSignals(slots, context);
+      testSignals(slots);
     }
   );
 });
