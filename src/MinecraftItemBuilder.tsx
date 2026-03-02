@@ -8,21 +8,11 @@ import TypeSortIcon from "./assets/typesorticon.svg?react";
 import XIcon from "./assets/xicon.svg?react";
 
 import "./MinecraftItemBuilder.css";
+import { HueRangePicker } from "./components/HueRangePicker";
 
 // Simple helper type
 export interface Dictionary<T> {
   [Key: string]: T;
-}
-
-// React props for the HueRangePicker component
-// TODO: Move this and its component in their own file
-export interface HueRangePickerProps {
-  hueRange: [number, number];
-  satRange: [number, number];
-  lumRange: [number, number];
-  onHueChange: React.Dispatch<React.SetStateAction<[number, number]>>;
-  onSatChange: React.Dispatch<React.SetStateAction<[number, number]>>;
-  onLumChange: React.Dispatch<React.SetStateAction<[number, number]>>;
 }
 
 // A representation of a Minecraft double chest filter for use by Copper Golems
@@ -51,7 +41,7 @@ export interface Slot extends Item {
   quantity?: number;
   isDuplicate?: true;
   originalIndex?: number;
-  userSubstituted?: true;
+  userSubstituted?: true; // TODO: This really doesn't do much. Use it or delete it
 }
 
 // A Slot with extra data for redstone signal optimization
@@ -102,376 +92,389 @@ export type DraggedSlot =
       selectedSlots: SelectedSlot[]; // TODO: Get rid of multiSelect and instead simply check whether selectedSlots contains something
     };
 
-function HueRangePicker({
-  hueRange,
-  satRange,
-  lumRange,
-  onHueChange,
-  onSatChange,
-  onLumChange,
-}: HueRangePickerProps) {
-  const size = 180;
-  const thickness = 25;
-  const radius = (size - thickness) / 2;
-  const centerX = size / 2;
-  const centerY = size / 2;
+// Calculate redstone signal strength for a container
+// Based on: floor(14/inv_size * reduce(items, (item:1)/min(64, stack_limit(item:0)) + _a, 0) + min(1, length(items)))
+// TODO: Make a function that checks if a cell is on the threshold for a signal change
+export function calculateSignalStrength(slots: (Slot | null)[]) {
+  const invSize = 54;
+  const items = slots.filter((item) => item !== null);
 
-  const handleHueMouseDown = (
-    e: React.MouseEvent<SVGCircleElement, MouseEvent>,
-    isStart: boolean
-  ) => {
-    e.preventDefault();
-    const svg = e.currentTarget?.closest("svg");
-    if (svg == null) throw new Error("svg element not found");
+  if (items.length === 0) return 0;
 
-    const rect = svg.getBoundingClientRect();
+  const fillSum = items.reduce((sum, item) => {
+    const stackLimit = Math.min(64, item.stack_size || 64);
+    const quantity = item.quantity || 1;
+    return sum + quantity / stackLimit;
+  }, 0);
 
-    const handleMouseMove = (moveEvent: {
-      clientX: number;
-      clientY: number;
-    }) => {
-      const x = moveEvent.clientX - rect.left - centerX;
-      const y = moveEvent.clientY - rect.top - centerY;
-      let angle = Math.atan2(y, x) * (180 / Math.PI);
-      angle = (angle + 90 + 360) % 360;
+  return Math.floor((14 / invSize) * fillSum + Math.min(1, items.length));
+}
 
-      if (isStart) {
-        onHueChange([angle, hueRange[1]]);
-      } else {
-        onHueChange([hueRange[0], angle]);
+// Normalize an ID by replacing compound tokens with single units
+function normalizeId(id: string, compounds: string[]) {
+  let normalized = id;
+  const replacements: { placeholder: string; original: string }[] = [];
+
+  // TODO: Use compounds.filter(compound => normalized.includes(compound))
+  compounds.forEach((compound, idx) => {
+    if (normalized.includes(compound)) {
+      const placeholder = `COMPOUND${idx}`;
+      normalized = normalized.replace(new RegExp(compound, "g"), placeholder);
+      replacements.push({ placeholder, original: compound });
+    }
+  });
+
+  return { normalized, replacements };
+}
+
+// Denormalize by restoring compound tokens
+function denormalizeId(
+  id: string,
+  replacements: {
+    placeholder: string;
+    original: string;
+  }[]
+) {
+  let denormalized = id;
+  replacements.forEach(({ placeholder, original }) => {
+    denormalized = denormalized.replace(new RegExp(placeholder, "g"), original);
+  });
+  return denormalized;
+}
+
+// Calculate namespace similarity between two items
+// Priority: 1) Same material, 2) Exact token matches, 3) Character similarity
+function getNamespaceSimilarity(
+  item1: { id: string; material: unknown } | undefined,
+  item2: { id: string; material: unknown } | undefined
+) {
+  if (!item1 || !item2 || !item1.id || !item2.id)
+    return { material: 0, tokens: 0, chars: 0 };
+
+  // Check if materials match (highest priority)
+  const materialMatch =
+    item1.material && item2.material && item1.material === item2.material
+      ? 1
+      : 0;
+
+  // Split IDs into tokens
+  const tokens1 = item1.id.split("_");
+  const tokens2 = item2.id.split("_");
+
+  // Count exact token matches (second priority)
+  // TODO: exactTokenMatches = tokens1.filter(token1 => tokens2.includes(token1)).length
+  let exactTokenMatches = 0;
+  for (const token1 of tokens1) {
+    for (const token2 of tokens2) {
+      if (token1 === token2) {
+        exactTokenMatches++;
       }
-    };
-
-    const handleMouseUp = () => {
-      document.removeEventListener("mousemove", handleMouseMove);
-      document.removeEventListener("mouseup", handleMouseUp);
-    };
-
-    handleMouseMove(e);
-    document.addEventListener("mousemove", handleMouseMove);
-    document.addEventListener("mouseup", handleMouseUp);
-  };
-
-  const getCoords = (angle: number) => {
-    const rad = (angle - 90) * (Math.PI / 180);
-    return {
-      x: centerX + radius * Math.cos(rad),
-      y: centerY + radius * Math.sin(rad),
-    };
-  };
-
-  const start = getCoords(hueRange[0]);
-  const end = getCoords(hueRange[1]);
-
-  // Calculate average color
-  let avgHue = (hueRange[0] + hueRange[1]) / 2;
-  if (Math.abs(hueRange[1] - hueRange[0]) > 180) {
-    avgHue = (avgHue + 180) % 360;
+    }
   }
-  const avgSat = (satRange[0] + satRange[1]) / 2;
-  const avgLum = (lumRange[0] + lumRange[1]) / 2;
-  const avgColor = `hsl(${avgHue}, ${avgSat}%, ${avgLum}%)`;
 
-  return (
-    <div className="flex items-center gap-3">
-      {/* Saturation Slider */}
-      <div className="flex flex-col items-center gap-2">
-        <div className="text-xs text-stone-400">S</div>
-        <div className="relative h-32 flex items-center gap-1">
-          {/* Range indicator box */}
-          <div
-            className="absolute border border-amber-500 pointer-events-none"
-            style={{
-              left: "-4px",
-              right: "-4px",
-              top: `${(1 - satRange[1] / 100) * 100}%`,
-              bottom: `${satRange[0]}%`,
-            }}
-          ></div>
+  // Calculate character similarity between tokens (tiebreaker)
+  let totalCharSimilarity = 0;
+  let comparisons = 0;
+  for (const token1 of tokens1) {
+    for (const token2 of tokens2) {
+      totalCharSimilarity += getTokenCharacterSimilarity(token1, token2);
+      comparisons++;
+    }
+  }
+  const avgCharSimilarity =
+    comparisons > 0 ? totalCharSimilarity / comparisons : 0;
 
-          {/* Left handle for min value */}
-          <div
-            className="w-3 h-3 bg-amber-500 rounded-full cursor-ns-resize z-20 hover:bg-amber-400 transition-colors border-2 border-black"
-            style={{
-              position: "absolute",
-              left: "-4px",
-              top: `${(1 - satRange[0] / 100) * 100}%`,
-              transform: "translateY(-50%)",
-            }}
-            onMouseDown={(e) => {
-              e.preventDefault();
-              const container = e.currentTarget.parentElement;
-              if (container == null) throw new Error("parentElement is null");
+  return {
+    material: materialMatch,
+    tokens: exactTokenMatches,
+    chars: avgCharSimilarity,
+  };
+}
 
-              const rect = container.getBoundingClientRect();
-              const handleMove = (moveEvent: {
-                clientX: number;
-                clientY: number;
-              }) => {
-                const y = Math.max(
-                  0,
-                  Math.min(rect.height, moveEvent.clientY - rect.top)
-                );
-                const value = Math.round((1 - y / rect.height) * 100);
-                onSatChange([Math.min(value, satRange[1]), satRange[1]]);
-              };
-              const handleUp = () => {
-                document.removeEventListener("mousemove", handleMove);
-                document.removeEventListener("mouseup", handleUp);
-              };
-              handleMove(e);
-              document.addEventListener("mousemove", handleMove);
-              document.addEventListener("mouseup", handleUp);
-            }}
-          ></div>
+// Calculate character similarity between two tokens (used as tiebreaker)
+function getTokenCharacterSimilarity(token1: string, token2: string) {
+  if (token1 === token2) return 1; // Perfect match
 
-          {/* Slider track */}
-          <div className="relative w-6 h-full rounded overflow-hidden">
-            <div className="absolute inset-0 bg-gradient-to-b from-gray-500 to-white"></div>
-          </div>
+  // Determine which is shorter
+  const [shorter, longer] =
+    token1.length > token2.length ? [token2, token1] : [token1, token2];
 
-          {/* Right handle for max value */}
-          <div
-            className="w-3 h-3 bg-amber-500 rounded-full cursor-ns-resize z-20 hover:bg-amber-400 transition-colors border-2 border-black"
-            style={{
-              position: "absolute",
-              right: "-4px",
-              top: `${(1 - satRange[1] / 100) * 100}%`,
-              transform: "translateY(-50%)",
-            }}
-            onMouseDown={(e) => {
-              e.preventDefault();
-              const container = e.currentTarget.parentElement;
-              if (container == null) throw new Error("parentElement is null");
+  // Count matching characters
+  let matches = shorter.split("").filter((c) => longer.includes(c)).length;
 
-              const rect = container.getBoundingClientRect();
-              const handleMove = (moveEvent: {
-                clientX: number;
-                clientY: number;
-              }) => {
-                const y = Math.max(
-                  0,
-                  Math.min(rect.height, moveEvent.clientY - rect.top)
-                );
-                const value = Math.round((1 - y / rect.height) * 100);
-                onSatChange([satRange[0], Math.max(value, satRange[0])]);
-              };
-              const handleUp = () => {
-                document.removeEventListener("mousemove", handleMove);
-                document.removeEventListener("mouseup", handleUp);
-              };
-              handleMove(e);
-              document.addEventListener("mousemove", handleMove);
-              document.addEventListener("mouseup", handleUp);
-            }}
-          ></div>
-        </div>
-        <div className="text-xs text-stone-400 w-12 text-center">
-          {satRange[0]}-{satRange[1]}
-        </div>
-      </div>
+  // Normalize to 0-1 range
+  return matches / longer.length;
+}
 
-      {/* Hue Ring */}
-      <div className="relative" style={{ width: size, height: size }}>
-        <svg width={size} height={size}>
-          {/* Draw hue wheel as segments */}
-          {Array.from({ length: 36 }).map((_, i) => {
-            const startAngle = (i * 10 - 90) * (Math.PI / 180);
-            const endAngle = ((i + 1) * 10 - 90) * (Math.PI / 180);
-            const hue = i * 10;
+// Calculate HSL color distance between two items
+const getColorDistance = (
+  item1: Item | null | undefined,
+  item2: Item | null | undefined
+) => {
+  // TODO: if(item1?.color?.hsl == null || item2?.color?.hsl == null) return Infinity;
+  if (!item1 || !item2 || !item1.color || !item2.color) return Infinity;
 
-            const x1 = centerX + radius * Math.cos(startAngle);
-            const y1 = centerY + radius * Math.sin(startAngle);
-            const x2 = centerX + radius * Math.cos(endAngle);
-            const y2 = centerY + radius * Math.sin(endAngle);
+  const hsl1 = item1.color.hsl;
+  const hsl2 = item2.color.hsl;
 
-            return (
-              <path
-                key={i}
-                d={`M ${x1} ${y1} A ${radius} ${radius} 0 0 1 ${x2} ${y2}`}
-                fill="none"
-                stroke={`hsl(${hue + 5}, 100%, 50%)`}
-                strokeWidth={thickness}
-              />
-            );
-          })}
+  if (!hsl1 || !hsl2) return Infinity;
 
-          {/* Range arc between markers */}
-          {(() => {
-            const innerRadius = radius - thickness / 2 - 2;
+  // Hue is circular (0-360 degrees), so we need special distance calculation
+  let hueDiff = Math.abs(hsl1[0] - hsl2[0]);
+  if (hueDiff > 180) hueDiff = 360 - hueDiff;
 
-            // Check if entire range is selected (0-360 or very close to it)
-            const isFullRange =
-              (hueRange[0] === 0 && hueRange[1] === 360) ||
-              Math.abs(hueRange[1] - hueRange[0]) >= 359;
+  // Normalize hue difference to 0-100 scale (like saturation and luminosity)
+  hueDiff = (hueDiff / 180) * 100;
 
-            if (isFullRange) {
-              // Draw a complete circle when full range is selected
-              return (
-                <circle
-                  cx={centerX}
-                  cy={centerY}
-                  r={innerRadius}
-                  fill="none"
-                  stroke="#fbbf24"
-                  strokeWidth="3"
-                />
-              );
-            } else {
-              // Draw arc between the two markers
-              const startAngle = (hueRange[0] - 90) * (Math.PI / 180);
-              const endAngle = (hueRange[1] - 90) * (Math.PI / 180);
+  const satDiff = Math.abs(hsl1[1] - hsl2[1]);
+  const lumDiff = Math.abs(hsl1[2] - hsl2[2]);
 
-              const x1 = centerX + innerRadius * Math.cos(startAngle);
-              const y1 = centerY + innerRadius * Math.sin(startAngle);
-              const x2 = centerX + innerRadius * Math.cos(endAngle);
-              const y2 = centerY + innerRadius * Math.sin(endAngle);
+  // Weighted Euclidean distance (hue is more important for visual similarity)
+  return Math.sqrt((hueDiff * 2) ** 2 + satDiff ** 2 + lumDiff ** 2);
+};
 
-              const arcLength = (hueRange[1] - hueRange[0] + 360) % 360;
-              const largeArc = arcLength > 180 ? 1 : 0;
+const rarityOrder: Dictionary<number> = {
+  common: 0,
+  uncommon: 1,
+  rare: 2,
+  epic: 3,
+};
+export function getRarityOrder(rarity: string | null | undefined) {
+  if (rarity == null) return 0;
+  return rarityOrder[rarity] ?? 0;
+}
 
-              return (
-                <path
-                  d={`M ${x1} ${y1} A ${innerRadius} ${innerRadius} 0 ${largeArc} 1 ${x2} ${y2}`}
-                  fill="none"
-                  stroke="#fbbf24"
-                  strokeWidth="3"
-                  strokeLinecap="round"
-                />
-              );
-            }
-          })()}
+// Optimize container to ensure adding one more item increments signal strength
+export function optimizeForRedstone(
+  slots: (Slot | null)[]
+): (OptimizedSlot | null)[] {
+  if (slots.every((x) => x == null)) return slots;
 
-          {/* Start marker */}
-          <circle
-            cx={start.x}
-            cy={start.y}
-            r="6"
-            fill="#fbbf24"
-            stroke="#000"
-            strokeWidth="2"
-            className="cursor-pointer"
-            onMouseDown={(e) => handleHueMouseDown(e, true)}
-          />
-
-          {/* End marker */}
-          <circle
-            cx={end.x}
-            cy={end.y}
-            r="6"
-            fill="#fbbf24"
-            stroke="#000"
-            strokeWidth="2"
-            className="cursor-pointer"
-            onMouseDown={(e) => handleHueMouseDown(e, false)}
-          />
-        </svg>
-
-        {/* Center circle showing average color */}
-        <div
-          className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-12 h-12 rounded-full border-4 border-stone-700"
-          style={{ backgroundColor: avgColor }}
-        ></div>
-      </div>
-
-      {/* Luminosity Slider */}
-      <div className="flex flex-col items-center gap-2">
-        <div className="text-xs text-stone-400">L</div>
-        <div className="relative h-32 flex items-center gap-1">
-          {/* Range indicator box */}
-          <div
-            className="absolute border border-amber-500 pointer-events-none"
-            style={{
-              left: "-4px",
-              right: "-4px",
-              top: `${(1 - lumRange[1] / 100) * 100}%`,
-              bottom: `${lumRange[0]}%`,
-            }}
-          ></div>
-
-          {/* Left handle for min value */}
-          <div
-            className="w-3 h-3 bg-amber-500 rounded-full cursor-ns-resize z-20 hover:bg-amber-400 transition-colors border-2 border-black"
-            style={{
-              position: "absolute",
-              left: "-4px",
-              top: `${(1 - lumRange[0] / 100) * 100}%`,
-              transform: "translateY(-50%)",
-            }}
-            onMouseDown={(e) => {
-              e.preventDefault();
-              const container = e.currentTarget.parentElement;
-              if (container == null) throw new Error("parentElement is null");
-
-              const rect = container.getBoundingClientRect();
-              const handleMove = (moveEvent: {
-                clientX: number;
-                clientY: number;
-              }) => {
-                const y = Math.max(
-                  0,
-                  Math.min(rect.height, moveEvent.clientY - rect.top)
-                );
-                const value = Math.round((1 - y / rect.height) * 100);
-                onLumChange([Math.min(value, lumRange[1]), lumRange[1]]);
-              };
-              const handleUp = () => {
-                document.removeEventListener("mousemove", handleMove);
-                document.removeEventListener("mouseup", handleUp);
-              };
-              handleMove(e);
-              document.addEventListener("mousemove", handleMove);
-              document.addEventListener("mouseup", handleUp);
-            }}
-          ></div>
-
-          {/* Slider track */}
-          <div className="relative w-6 h-full rounded overflow-hidden">
-            <div className="absolute inset-0 bg-gradient-to-b from-white via-gray-500 to-black"></div>
-          </div>
-
-          {/* Right handle for max value */}
-          <div
-            className="w-3 h-3 bg-amber-500 rounded-full cursor-ns-resize z-20 hover:bg-amber-400 transition-colors border-2 border-black"
-            style={{
-              position: "absolute",
-              right: "-4px",
-              top: `${(1 - lumRange[1] / 100) * 100}%`,
-              transform: "translateY(-50%)",
-            }}
-            onMouseDown={(e) => {
-              e.preventDefault();
-              const container = e.currentTarget.parentElement;
-              if (container == null) throw new Error("parentElement is null");
-
-              const rect = container.getBoundingClientRect();
-              const handleMove = (moveEvent: {
-                clientX: number;
-                clientY: number;
-              }) => {
-                const y = Math.max(
-                  0,
-                  Math.min(rect.height, moveEvent.clientY - rect.top)
-                );
-                const value = Math.round((1 - y / rect.height) * 100);
-                onLumChange([lumRange[0], Math.max(value, lumRange[0])]);
-              };
-              const handleUp = () => {
-                document.removeEventListener("mousemove", handleMove);
-                document.removeEventListener("mouseup", handleUp);
-              };
-              handleMove(e);
-              document.addEventListener("mousemove", handleMove);
-              document.addEventListener("mouseup", handleUp);
-            }}
-          ></div>
-        </div>
-        <div className="text-xs text-stone-400 w-12 text-center">
-          {lumRange[0]}-{lumRange[1]}
-        </div>
-      </div>
-    </div>
+  // Always use the simpler logic: items are adjusted if they have quantity > 1 OR multiple instances exist
+  const optimizedSlots: (OptimizedSlot | null)[] = slots.map((item, idx) =>
+    item
+      ? {
+          ...item,
+          quantity: item.quantity || 1,
+          originalIndex: item.originalIndex ?? idx,
+        }
+      : null
   );
+  let currentSignal = calculateSignalStrength(optimizedSlots);
+
+  // Count occurrences of each item ID
+  function itemCounts() {
+    return optimizedSlots
+      .filter((item) => item != null)
+      .reduce<Dictionary<number>>((acc, item) => {
+        acc[item.id] = (acc[item.id] ?? 0) + 1;
+        return acc;
+      }, {});
+  }
+
+  // Mark items that are already adjusted (have quantity > 1 OR multiple instances)
+  // These are items we want to preserve from substitution
+  // TODO: This is used several times. Turn it into a function
+  for (const item of optimizedSlots.filter((item) => item != null)) {
+    const hasQuantity = item.quantity > 1;
+    const hasMultipleInstances = (itemCounts()[item.id] ?? 0) > 1;
+    item.forceAdjusted = hasQuantity || hasMultipleInstances;
+  }
+
+  // Check if we have any items with quantity adjustments (not just duplicates)
+  const hasQuantityAdjustments = optimizedSlots.some(
+    (item) => (item?.quantity ?? 0) > 1
+  );
+
+  // If we don't have quantity adjustments, mark ALL items as candidates
+  // TODO: This overwrites the work of the previous loop. Put both in an if/else. Don't do it twice.
+  if (!hasQuantityAdjustments) {
+    // Mark ALL items as candidates for adjustment
+    for (const item of optimizedSlots.filter((item) => item != null)) {
+      item.forceAdjusted = true;
+    }
+  }
+
+  // If we have user substitutions, only use items with forceAdjusted (preserves user choices)
+  // Find items that should be adjusted
+  const forcedItems = optimizedSlots
+    .filter((item) => item != null) // Split off so it is recognized as a type predicate
+    .filter((item) => item.forceAdjusted);
+
+  // TODO: Use filter() instead and check the length (we'll need the filtered array anyway)
+  const hasUnstackable = forcedItems.some((item) => item.stack_size === 1);
+  const hasSixteen = forcedItems.some((item) => item.stack_size === 16);
+  const hasSixtyFour = forcedItems.some((item) => item.stack_size === 64);
+
+  // TODO: It works, but it's ugly
+  let AreUnstackablesAtThreshold = false;
+  let Are16StackablesAtThreshold = false;
+  let Are64StackablesAtThreshold = false;
+
+  // Strategy 1: Duplicate unstackables if available (only if no quantity adjustments exist)
+  if (hasUnstackable && !hasQuantityAdjustments) {
+    // Find the most common unstackable to duplicate (prefer lower rarity)
+    const unstackables = forcedItems.filter((item) => item.stack_size === 1);
+    const targetUnstackable = unstackables.reduce(
+      (acc, item) =>
+        getRarityOrder(item?.rarity) < getRarityOrder(acc?.rarity) ? item : acc,
+      unstackables[0]
+    );
+
+    if (targetUnstackable) {
+      // Fill empty slots with this unstackable until signal increments
+      for (const [i, _] of optimizedSlots
+        .entries()
+        .drop(1)
+        .filter(([_, item]) => item == null)) {
+        optimizedSlots[i] = {
+          ...targetUnstackable,
+          quantity: 1,
+          originalIndex: -1,
+          isDuplicate: true,
+          forceAdjusted: true,
+        };
+        const newSignal = calculateSignalStrength(optimizedSlots);
+        if (newSignal > currentSignal) {
+          // Remove this last one so we're at the threshold
+          optimizedSlots[i] = null;
+          AreUnstackablesAtThreshold = true;
+          break;
+        }
+      }
+    }
+  }
+
+  // Strategy 2: Increment 16-stackables from the END
+  // TODO: Strategy 2 and 3 (and maybe even 1) are very similar and could be unified into one function
+  if (hasSixteen) {
+    outer: for (const item of optimizedSlots
+      .slice(1)
+      .reverse()
+      .filter((item) => item != null) // Split off so it is recognized as a type predicate
+      .filter(
+        (item) => item.forceAdjusted === true && item.stack_size === 16
+      )) {
+      // Increment until we reach the stack-size or find the threshold
+      while (item.quantity < 16) {
+        item.quantity++;
+        const newSignal = calculateSignalStrength(optimizedSlots);
+        if (newSignal > currentSignal) {
+          // We found the signal threshold, so we undo the last quantity increment then bail
+          item.quantity--;
+          Are16StackablesAtThreshold = true;
+          break outer;
+        }
+      }
+    }
+  }
+
+  // Strategy 3: Increment 64-stackables from the END
+  if (hasSixtyFour) {
+    outer: for (const item of optimizedSlots
+      .slice(1)
+      .reverse()
+      .filter((item) => item != null) // Split off so it is recognized as a type predicate
+      .filter((item) => item.forceAdjusted && item.stack_size === 64)) {
+      // Increment until we reach the stack-size or find the threshold
+      while (item.quantity < 64) {
+        item.quantity++;
+        const newSignal = calculateSignalStrength(optimizedSlots);
+        if (newSignal > currentSignal) {
+          // We found the signal threshold, so we undo the last quantity increment then bail
+          item.quantity--;
+          Are64StackablesAtThreshold = true;
+          break outer;
+        }
+      }
+    }
+  }
+
+  // Strategy 4: Duplicate stackables if needed (only if no quantity adjustments exist)
+  // This runs if all existing stacks are maxed and we still haven't reached threshold
+  if (
+    !hasQuantityAdjustments &&
+    ((!AreUnstackablesAtThreshold && hasUnstackable) ||
+      (!Are16StackablesAtThreshold && hasSixteen) ||
+      (!Are64StackablesAtThreshold && hasSixtyFour))
+  ) {
+    // Check if all items are at their stack limits
+    // TODO: This check is probably redundant. Write tests.
+    let allMaxed = !optimizedSlots.some(
+      (item) => item?.forceAdjusted && item.quantity < item.stack_size
+    );
+
+    // Only duplicate if all existing stacks are maxed
+    if (allMaxed) {
+      // Find an item to duplicate. Prefer larger stack sizes then lower rarity
+      const itemToDuplicate = forcedItems.reduce((acc, item) =>
+        item.stack_size >= acc.stack_size &&
+        getRarityOrder(item.rarity) < getRarityOrder(acc.rarity)
+          ? item
+          : acc
+      );
+
+      // Duplicate items until adding a full stack would increment signal
+      for (let [i, _] of optimizedSlots
+        .entries()
+        .drop(1)
+        .filter(([_, item]) => item == null)) {
+        const newItem: OptimizedSlot = (optimizedSlots[i] = {
+          ...itemToDuplicate,
+          originalIndex: -1,
+          forceAdjusted: true,
+        });
+        const newSignal = calculateSignalStrength(optimizedSlots);
+        if (newSignal > currentSignal) {
+          // Keep this stack but set quantity to 1, then Strategy 5 will fine-tune it
+          // TODO: Why not do Strategy 5 here?
+          newItem.quantity = 1;
+          break;
+        }
+      }
+    }
+  }
+
+  // Strategy 5: Final increment pass on all forced items from the END
+  outer: for (const item of optimizedSlots
+    .filter((item) => item != null)
+    .filter((item) => item.forceAdjusted && item.quantity < item.stack_size)
+    .reverse()) {
+    while (item.quantity < item.stack_size) {
+      item.quantity++;
+      const newSignal = calculateSignalStrength(optimizedSlots);
+      if (newSignal > currentSignal) {
+        item.quantity--;
+        break outer;
+      }
+    }
+  }
+
+  // Recalculate forceAdjusted flags AFTER quantities have been adjusted
+  // An item is adjusted if: (1) quantity > 1, OR (2) multiple instances exist
+  for (const item of optimizedSlots.filter((item) => item != null)) {
+    const hasQuantity = item.quantity > 1;
+    const hasMultipleInstances = (itemCounts()[item.id] ?? 0) > 1;
+    item.forceAdjusted = hasQuantity || hasMultipleInstances;
+  }
+
+  // Organize into adjusted vs unadjusted
+  const withoutNulls = optimizedSlots.filter((item) => item != null);
+  withoutNulls.forEach(
+    (item) => (item.isAdjusted = item.forceAdjusted === true)
+  );
+  const adjusted = withoutNulls.filter((item) => item.forceAdjusted);
+  const unadjusted = withoutNulls.filter((item) => !item.forceAdjusted);
+
+  // Sort adjusted items from smallest stack size then smallest quantities
+  adjusted.sort((a, b) => {
+    if (a.stack_size !== b.stack_size) return a.stack_size - b.stack_size;
+    return a.quantity - b.quantity;
+  });
+
+  // Calculate null padding
+  const nullsNeeded = 53 - unadjusted.length - adjusted.length;
+  return [null, ...unadjusted, ...Array(nullsNeeded).fill(null), ...adjusted];
 }
 
 export default function MinecraftItemBuilder() {
@@ -1787,366 +1790,6 @@ export default function MinecraftItemBuilder() {
     setDraggedSlot(null);
   };
 
-  // Calculate redstone signal strength for a container
-  // Based on: floor(14/inv_size * reduce(items, (item:1)/min(64, stack_limit(item:0)) + _a, 0) + min(1, length(items)))
-  const calculateSignalStrength = (slots: (Slot | null)[]) => {
-    const invSize = 54;
-    const items = slots.filter((item) => item !== null);
-
-    if (items.length === 0) return 0;
-
-    const fillSum = items.reduce((sum, item) => {
-      const stackLimit = Math.min(64, item.stack_size || 64);
-      const quantity = item.quantity || 1;
-      return sum + quantity / stackLimit;
-    }, 0);
-
-    return Math.floor((14 / invSize) * fillSum + Math.min(1, items.length));
-  };
-
-  // Optimize container to ensure adding one more item increments signal strength
-  const optimizeForRedstone = (
-    slots: (Slot | null)[]
-  ): (OptimizedSlot | null)[] => {
-    if (slots.every((x) => x == null)) return slots;
-
-    // Always use the simpler logic: items are adjusted if they have quantity > 1 OR multiple instances exist
-    let optimizedSlots: (OptimizedSlot | null)[] = slots.map((item, idx) =>
-      item
-        ? { ...item, quantity: item.quantity || 1, originalIndex: idx }
-        : null
-    );
-    let currentSignal = calculateSignalStrength(optimizedSlots);
-
-    // Count occurrences of each item ID
-    const itemCounts: Dictionary<number> = {};
-    // TODO: use for(const item of optimizedSlots) or maybe even optimizedSlots.reduce()?
-    for (let i = 1; i < optimizedSlots.length; i++) {
-      const item = optimizedSlots[i];
-      if (item) {
-        itemCounts[item.id] = (itemCounts[item.id] || 0) + 1;
-      }
-    }
-
-    // Mark items that are already adjusted (have quantity > 1 OR multiple instances)
-    // These are items we want to preserve from substitution
-    // TODO: for(const item of optimizedSlots.filter((item) => item != null))
-    for (let i = 1; i < optimizedSlots.length; i++) {
-      const item = optimizedSlots[i];
-      if (item) {
-        const hasMultipleInstances = itemCounts[item.id] ?? 0 > 1;
-        const hasQuantity = (item.quantity || 1) > 1;
-        if (hasQuantity || hasMultipleInstances) {
-          item.forceAdjusted = true;
-        }
-      }
-    }
-
-    // Check if we have any items with quantity adjustments (not just duplicates)
-    const hasQuantityAdjustments = optimizedSlots.some(
-      (item) => item && (item.quantity || 1) > 1
-    );
-
-    // Check if we have any user-substituted items (from manual drag-drop substitution)
-    const hasUserSubstituted = optimizedSlots.some(
-      (item) => item && item.userSubstituted === true
-    );
-
-    // If we don't have quantity adjustments AND no user substitutions, mark ALL items as candidates
-    if (!hasQuantityAdjustments && !hasUserSubstituted) {
-      // Mark ALL items as candidates for adjustment
-      // TODO: for(const item of optimizedSlots.filter((item) => item != null))
-      for (let i = optimizedSlots.length - 1; i >= 1; i--) {
-        const item = optimizedSlots[i];
-        if (item) {
-          item.forceAdjusted = true;
-        }
-      }
-    }
-    // If we have user substitutions, only use items with forceAdjusted (preserves user choices)
-
-    // Find items that should be adjusted
-    const forcedItems = optimizedSlots.filter(
-      (item) => item && item.forceAdjusted === true
-    );
-    const hasUnstackable = forcedItems.some(
-      (item) => (item?.stack_size || 64) === 1
-    );
-    const hasSixteen = forcedItems.some(
-      (item) => (item?.stack_size || 64) === 16
-    );
-    const hasSixtyFour = forcedItems.some(
-      (item) => (item?.stack_size || 64) === 64
-    );
-
-    // Strategy 1: Duplicate unstackables if available (only if no quantity adjustments exist)
-    if (hasUnstackable && !hasQuantityAdjustments) {
-      // Find the most common unstackable to duplicate (prefer lower rarity)
-      const unstackables = forcedItems.filter(
-        (item) => (item?.stack_size || 64) === 1
-      );
-      const rarityOrder: Dictionary<number> = {
-        common: 0,
-        uncommon: 1,
-        rare: 2,
-        epic: 3,
-      };
-      const getRarityOrder = (item: Item | null) =>
-        item ? rarityOrder[item.rarity] ?? 0 : 0;
-      //TODO: reduce() instead of sort() to get the least rare
-      const targetUnstackable = unstackables.sort((a, b) => {
-        return getRarityOrder(a) - getRarityOrder(b);
-      })[0];
-
-      if (targetUnstackable) {
-        // Fill empty slots with this unstackable until signal increments
-        // TODO: This probably could be replaced with a map()
-        for (let i = 1; i < optimizedSlots.length; i++) {
-          if (optimizedSlots[i] === null) {
-            optimizedSlots[i] = {
-              ...targetUnstackable,
-              quantity: 1,
-              originalIndex: -1,
-              isDuplicate: true,
-              forceAdjusted: true,
-            };
-            const newSignal = calculateSignalStrength(optimizedSlots);
-            if (newSignal > currentSignal) {
-              // Remove this last one so we're at the threshold
-              optimizedSlots[i] = null;
-              break;
-            }
-          }
-        }
-      }
-    }
-
-    // Strategy 2: Increment 16-stackables from the END
-    if (hasSixteen) {
-      while (true) {
-        let incremented = false;
-        // TODO: Use for(const item of optimizedSlots.reverse().filter(...))
-        for (let i = optimizedSlots.length - 1; i >= 1; i--) {
-          const item = optimizedSlots[i];
-          if (
-            item &&
-            item.forceAdjusted === true &&
-            (item.stack_size || 64) === 16
-          ) {
-            if (item.quantity < 16) {
-              item.quantity++;
-              const newSignal = calculateSignalStrength(optimizedSlots);
-              if (newSignal > currentSignal) {
-                item.quantity--;
-                break;
-              }
-              incremented = true;
-              break;
-            }
-          }
-        }
-        if (!incremented) break;
-      }
-    }
-
-    // Strategy 3: Increment 64-stackables from the END
-    if (hasSixtyFour) {
-      while (true) {
-        let incremented = false;
-        // TODO: Use for(const item of optimizedSlots.reverse().filter(...))
-        for (let i = optimizedSlots.length - 1; i >= 1; i--) {
-          const item = optimizedSlots[i];
-          if (
-            item &&
-            item.forceAdjusted === true &&
-            (item.stack_size || 64) === 64
-          ) {
-            if (item.quantity < 64) {
-              item.quantity++;
-              const newSignal = calculateSignalStrength(optimizedSlots);
-              if (newSignal > currentSignal) {
-                item.quantity--;
-                break;
-              }
-              incremented = true;
-              break;
-            }
-          }
-        }
-        if (!incremented) break;
-      }
-    }
-
-    // Strategy 4: Duplicate stackables if needed (only if no quantity adjustments exist)
-    // This runs if all existing stacks are maxed and we still haven't reached threshold
-    if (!hasQuantityAdjustments) {
-      let finalSignal = calculateSignalStrength(optimizedSlots);
-      if (finalSignal === currentSignal) {
-        // Check if all items are at their stack limits
-        let allMaxed = true;
-        // TODO: allMaxed = !optimizedSlots.some((item) => item && item.forceAdjusted === true && item.quantity < (item.stack_size || 64))
-        for (let i = 1; i < optimizedSlots.length; i++) {
-          const item = optimizedSlots[i];
-          if (item && item.forceAdjusted === true) {
-            const stackLimit = item.stack_size || 64;
-            if (item.quantity < stackLimit) {
-              allMaxed = false;
-              break;
-            }
-          }
-        }
-
-        // Only duplicate if all existing stacks are maxed
-        if (allMaxed) {
-          // Try duplicating items (prefer lower rarity and smaller stack sizes)
-          const availableItems = forcedItems
-            .filter((item) => item !== null)
-            .sort((a, b) => {
-              // TODO: Make a reusable getRarityOrder function, instead of duplicating this
-              const rarityOrder: Dictionary<number> = {
-                common: 0,
-                uncommon: 1,
-                rare: 2,
-                epic: 3,
-              };
-              const rarityA = rarityOrder[a.rarity] || 0;
-              const rarityB = rarityOrder[b.rarity] || 0;
-              if (rarityA !== rarityB) return rarityA - rarityB;
-              const stackA = a.stack_size || 64;
-              const stackB = b.stack_size || 64;
-              return stackA - stackB;
-            });
-
-          // Try duplicating items until adding a full stack would increment signal
-          for (const itemToDuplicate of availableItems) {
-            // TODO: Ideally this should be a map()
-            for (let i = 1; i < optimizedSlots.length; i++) {
-              if (optimizedSlots[i] === null) {
-                const item: OptimizedSlot = (optimizedSlots[i] = {
-                  ...itemToDuplicate,
-                  originalIndex: -1,
-                  forceAdjusted: true,
-                });
-                const newSignal = calculateSignalStrength(optimizedSlots);
-                if (newSignal > currentSignal) {
-                  // Keep this stack but set quantity to 1, then Strategy 5 will fine-tune it
-                  item.quantity = 1; // Yes, this updates optimizedSlots. Not ideal but it works for now.
-                  break;
-                }
-              }
-            }
-            // Check if we've reached the threshold
-            if (calculateSignalStrength(optimizedSlots) > currentSignal) {
-              break;
-            }
-          }
-        }
-      }
-    }
-
-    // Strategy 5: Final increment pass on all forced items from the END
-    currentSignal = calculateSignalStrength(optimizedSlots);
-    let reachedThreshold = false;
-    while (true) {
-      let incremented = false;
-      // TODO: Use for(const item of optimizedSlots.reverse().filter(...))
-      for (let i = optimizedSlots.length - 1; i >= 1; i--) {
-        const item = optimizedSlots[i];
-        if (item && item.forceAdjusted === true) {
-          const stackLimit = item.stack_size || 64;
-          if (item.quantity < stackLimit) {
-            item.quantity++;
-            const newSignal = calculateSignalStrength(optimizedSlots);
-            if (newSignal > currentSignal) {
-              item.quantity--;
-              reachedThreshold = true;
-              break;
-            }
-            incremented = true;
-            break;
-          }
-        }
-      }
-      if (!incremented || reachedThreshold) break;
-    }
-
-    // Recalculate forceAdjusted flags AFTER quantities have been adjusted
-    // An item is adjusted if: (1) quantity > 1, OR (2) multiple instances exist
-    // TODO: Use a for-of
-    for (let i = 1; i < optimizedSlots.length; i++) {
-      const item = optimizedSlots[i];
-      if (item) {
-        const hasMultipleInstances = (itemCounts[item.id] ?? 0) > 1;
-        const hasQuantity = (item.quantity || 1) > 1;
-        item.forceAdjusted = hasQuantity || hasMultipleInstances;
-      }
-    }
-
-    // Organize into adjusted vs unadjusted
-    const unadjusted = [];
-    const adjusted = [];
-    // TODO: Simply fill adjusted and unadjusted with optimizedSlots.filter().map()
-    for (let i = 1; i < optimizedSlots.length; i++) {
-      const item = optimizedSlots[i];
-      if (item != null) {
-        if (item.forceAdjusted === true) {
-          item.isAdjusted = true;
-          adjusted.push(item);
-        } else {
-          item.isAdjusted = false;
-          unadjusted.push(item);
-        }
-      }
-    }
-
-    // Sort adjusted items
-    adjusted.sort((a, b) => {
-      const aStack = a.stack_size || 64;
-      const bStack = b.stack_size || 64;
-      if (aStack === 1 && bStack !== 1) return -1;
-      if (aStack !== 1 && bStack === 1) return 1;
-      return a.quantity - b.quantity;
-    });
-
-    // Calculate null padding
-    const nullsNeeded = 53 - unadjusted.length - adjusted.length; // TODO: Maybe clamp minimum value to 0
-    // TODO: return [null, ...unadjusted, ...Array(nullsNeeded).fill(null)), ...adjusted]
-    const result = [null, ...unadjusted];
-    for (let i = 0; i < nullsNeeded; i++) {
-      result.push(null);
-    }
-    result.push(...adjusted);
-
-    return result;
-  };
-
-  // Calculate HSL color distance between two items
-  const getColorDistance = (
-    item1: Item | null | undefined,
-    item2: Item | null | undefined
-  ) => {
-    // TODO: if(item1?.color?.hsl == null || item2?.color?.hsl == null) return Infinity;
-    if (!item1 || !item2 || !item1.color || !item2.color) return Infinity;
-
-    const hsl1 = item1.color.hsl;
-    const hsl2 = item2.color.hsl;
-
-    if (!hsl1 || !hsl2) return Infinity;
-
-    // Hue is circular (0-360 degrees), so we need special distance calculation
-    let hueDiff = Math.abs(hsl1[0] - hsl2[0]);
-    if (hueDiff > 180) hueDiff = 360 - hueDiff;
-
-    // Normalize hue difference to 0-100 scale (like saturation and luminosity)
-    hueDiff = (hueDiff / 180) * 100;
-
-    const satDiff = Math.abs(hsl1[1] - hsl2[1]);
-    const lumDiff = Math.abs(hsl1[2] - hsl2[2]);
-
-    // Weighted Euclidean distance (hue is more important for visual similarity)
-    return Math.sqrt((hueDiff * 2) ** 2 + satDiff ** 2 + lumDiff ** 2);
-  };
-
   // Sort cell items by color similarity (greedy nearest neighbor)
   const sortCellByColor = (cellId: number) => {
     saveToHistory();
@@ -2196,70 +1839,6 @@ export default function MinecraftItemBuilder() {
     );
   };
 
-  // Calculate character similarity between two tokens (used as tiebreaker)
-  const getTokenCharacterSimilarity = (token1: string, token2: string) => {
-    if (token1 === token2) return 1; // Perfect match
-
-    // Determine which is shorter
-    const [shorter, longer] =
-      token1.length > token2.length ? [token2, token1] : [token1, token2];
-
-    // Count matching characters
-    let matches = shorter.split("").filter((c) => longer.includes(c)).length;
-
-    // Normalize to 0-1 range
-    return matches / longer.length;
-  };
-
-  // Calculate namespace similarity between two items
-  // Priority: 1) Same material, 2) Exact token matches, 3) Character similarity
-  const getNamespaceSimilarity = (
-    item1: { id: string; material: unknown } | undefined,
-    item2: { id: string; material: unknown } | undefined
-  ) => {
-    if (!item1 || !item2 || !item1.id || !item2.id)
-      return { material: 0, tokens: 0, chars: 0 };
-
-    // Check if materials match (highest priority)
-    const materialMatch =
-      item1.material && item2.material && item1.material === item2.material
-        ? 1
-        : 0;
-
-    // Split IDs into tokens
-    const tokens1 = item1.id.split("_");
-    const tokens2 = item2.id.split("_");
-
-    // Count exact token matches (second priority)
-    // TODO: exactTokenMatches = tokens1.filter(token1 => tokens2.includes(token1)).length
-    let exactTokenMatches = 0;
-    for (const token1 of tokens1) {
-      for (const token2 of tokens2) {
-        if (token1 === token2) {
-          exactTokenMatches++;
-        }
-      }
-    }
-
-    // Calculate character similarity between tokens (tiebreaker)
-    let totalCharSimilarity = 0;
-    let comparisons = 0;
-    for (const token1 of tokens1) {
-      for (const token2 of tokens2) {
-        totalCharSimilarity += getTokenCharacterSimilarity(token1, token2);
-        comparisons++;
-      }
-    }
-    const avgCharSimilarity =
-      comparisons > 0 ? totalCharSimilarity / comparisons : 0;
-
-    return {
-      material: materialMatch,
-      tokens: exactTokenMatches,
-      chars: avgCharSimilarity,
-    };
-  };
-
   // Load and parse compound tokens that must stay together
   const [compoundTokens, setCompoundTokens] = useState<string[]>([]);
 
@@ -2277,41 +1856,6 @@ export default function MinecraftItemBuilder() {
       })
       .catch((err) => console.error("Failed to load compound tokens:", err));
   }, []);
-
-  // Normalize an ID by replacing compound tokens with single units
-  const normalizeId = (id: string, compounds: string[]) => {
-    let normalized = id;
-    const replacements: { placeholder: string; original: string }[] = [];
-
-    // TODO: Use compounds.filter(compound => normalized.includes(compound))
-    compounds.forEach((compound, idx) => {
-      if (normalized.includes(compound)) {
-        const placeholder = `COMPOUND${idx}`;
-        normalized = normalized.replace(new RegExp(compound, "g"), placeholder);
-        replacements.push({ placeholder, original: compound });
-      }
-    });
-
-    return { normalized, replacements };
-  };
-
-  // Denormalize by restoring compound tokens
-  const denormalizeId = (
-    id: string,
-    replacements: {
-      placeholder: string;
-      original: string;
-    }[]
-  ) => {
-    let denormalized = id;
-    replacements.forEach(({ placeholder, original }) => {
-      denormalized = denormalized.replace(
-        new RegExp(placeholder, "g"),
-        original
-      );
-    });
-    return denormalized;
-  };
 
   // Find the best split point for all items in a cell
   // Returns the index where we should split tokens into [prefix tokens] and [suffix tokens]
@@ -3217,7 +2761,7 @@ export default function MinecraftItemBuilder() {
               baseSource.quantity = targetQuantity;
             }
             // Target goes to source position in unadjusted section
-            // TODO: Don't delete props. Just change their values to null or something
+            // TODO: Don't delete props. Just change their values to null or false
             delete baseTarget.forceAdjusted;
             delete baseTarget.userSubstituted;
 
@@ -3254,10 +2798,10 @@ export default function MinecraftItemBuilder() {
   };
 
   // Cell drag handlers
-  const handleCellDragStart = (
+  function handleCellDragStart(
     e: React.DragEvent<HTMLDivElement>,
     cellId: number
-  ) => {
+  ) {
     if (!(e.target instanceof HTMLElement))
       throw Error("Target isn't an HTMLElement");
 
@@ -3270,7 +2814,7 @@ export default function MinecraftItemBuilder() {
     setDraggedCell(cellId);
     e.currentTarget.classList.add("dragging-cell");
     e.dataTransfer.effectAllowed = "move";
-  };
+  }
 
   const handleCellDragEnd = (e: React.DragEvent<HTMLDivElement>) => {
     e.currentTarget.classList.remove("dragging-cell");

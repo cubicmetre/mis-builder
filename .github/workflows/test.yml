@@ -1,0 +1,37 @@
+name: Run all tests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  unit-test:
+    runs-on: ubuntu-latest
+    permissions:
+      # Required to put a comment into the PR
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+          cache: "npm"
+      - run: npm ci
+
+      - name: Run tests
+        run: npm run test:coverage
+
+      - name: Report coverage
+        # Ensure this step runs even if tests fail
+        if: always()
+        uses: davelosert/vitest-coverage-report-action@v2
