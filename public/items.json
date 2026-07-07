@@ -10949,7 +10949,7 @@
   },
   {
     "id": "creeper_banner_pattern",
-    "name": "Banner Pattern",
+    "name": "Creeper Charge Banner Pattern",
     "sprite": "sprites/creeper_banner_pattern.png",
     "color": {
       "rgb": [
@@ -15112,7 +15112,7 @@
   },
   {
     "id": "flow_banner_pattern",
-    "name": "Banner Pattern",
+    "name": "Flow Banner Pattern",
     "sprite": "sprites/flow_banner_pattern.png",
     "color": {
       "rgb": [
@@ -15181,7 +15181,7 @@
   },
   {
     "id": "flower_banner_pattern",
-    "name": "Banner Pattern",
+    "name": "Flower Charge Banner Pattern",
     "sprite": "sprites/flower_banner_pattern.png",
     "color": {
       "rgb": [
@@ -15480,7 +15480,7 @@
   },
   {
     "id": "globe_banner_pattern",
-    "name": "Banner Pattern",
+    "name": "Globe Banner Pattern",
     "sprite": "sprites/globe_banner_pattern.png",
     "color": {
       "rgb": [
@@ -16331,7 +16331,7 @@
   },
   {
     "id": "guster_banner_pattern",
-    "name": "Banner Pattern",
+    "name": "Guster Banner Pattern",
     "sprite": "sprites/guster_banner_pattern.png",
     "color": {
       "rgb": [
@@ -19735,7 +19735,7 @@
   },
   {
     "id": "mojang_banner_pattern",
-    "name": "Banner Pattern",
+    "name": "Thing Banner Pattern",
     "sprite": "sprites/mojang_banner_pattern.png",
     "color": {
       "rgb": [
@@ -22863,7 +22863,7 @@
   },
   {
     "id": "piglin_banner_pattern",
-    "name": "Banner Pattern",
+    "name": "Snout Banner Pattern",
     "sprite": "sprites/piglin_banner_pattern.png",
     "color": {
       "rgb": [
@@ -26083,7 +26083,7 @@
   },
   {
     "id": "skull_banner_pattern",
-    "name": "Banner Pattern",
+    "name": "Skull Charge Banner Pattern",
     "sprite": "sprites/skull_banner_pattern.png",
     "color": {
       "rgb": [
